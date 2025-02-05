@@ -1,0 +1,39 @@
+/* 步骤按钮样式 */
+QPushButton {
+    padding: 10px;
+    text-align: left;
+    border-radius: 4px;
+    margin: 2px;
+}
+
+QPushButton:hover {
+    background: #f0f0f0;
+}
+
+/* 目录树样式 */
+QTreeView {
+    show-decoration-selected: 1;
+    alternate-background-color: #f8f8f8;
+}
+
+QTreeView::item:hover {
+    background: #e0f0ff;
+}
+
+/* 分组标题样式 */
+QLabel[text^="==="] {
+    font-weight: bold;
+    color: #2c3e50;
+    padding: 8px 0;
+    border-bottom: 2px solid #3498db;
+}
+
+/* 输入框验证状态 */
+QLineEdit:invalid {
+    border: 1px solid #e74c3c;
+    background: #ffeeed;
+}
+
+QLineEdit:focus {
+    border: 1px solid #3498db;
+}

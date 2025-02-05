@@ -1,0 +1,7 @@
+.DS_Store
+ui/__pycache__/info_page.cpython-39.pyc
+ui/__pycache__/__init__.cpython-39.pyc
+ui/__pycache__/basic_info_page.cpython-39.pyc
+core/__pycache__/data_model.cpython-39.pyc
+__pycache__/ui_main.cpython-39.pyc
+*.pyc
