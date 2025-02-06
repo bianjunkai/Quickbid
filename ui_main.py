@@ -9,6 +9,7 @@
 
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+from ui.basic_info_page import BasicInfoPage
 
 
 class Ui_Form(object):
@@ -39,15 +40,6 @@ class Ui_Form(object):
         self.horizontalLayout.addLayout(self.verticalLayout)
         self.stackedWidget = QtWidgets.QStackedWidget(self.widget)
         self.stackedWidget.setObjectName("stackedWidget")
-        self.page = QtWidgets.QWidget()
-        self.page.setObjectName("page")
-        self.stackedWidget.addWidget(self.page)
-        self.page_3 = QtWidgets.QWidget()
-        self.page_3.setObjectName("page_3")
-        self.stackedWidget.addWidget(self.page_3)
-        self.page_2 = QtWidgets.QWidget()
-        self.page_2.setObjectName("page_2")
-        self.stackedWidget.addWidget(self.page_2)
         self.horizontalLayout.addWidget(self.stackedWidget)
         self.verticalLayout_2 = QtWidgets.QVBoxLayout()
         self.verticalLayout_2.setObjectName("verticalLayout_2")
@@ -61,6 +53,12 @@ class Ui_Form(object):
         self.lbl_project_name = QtWidgets.QLabel(self.groupBox_info)
         self.lbl_project_name.setObjectName("lbl_project_name")
         self.formLayout.setWidget(0, QtWidgets.QFormLayout.FieldRole, self.lbl_project_name)
+        self.label_project_code = QtWidgets.QLabel(self.groupBox_info)
+        self.label_project_code.setObjectName("label_project_code")
+        self.formLayout.setWidget(1, QtWidgets.QFormLayout.LabelRole, self.label_project_code)
+        self.lbl_project_code = QtWidgets.QLabel(self.groupBox_info)
+        self.lbl_project_code.setObjectName("lbl_project_code")
+        self.formLayout.setWidget(1, QtWidgets.QFormLayout.FieldRole, self.lbl_project_code)
         self.verticalLayout_2.addWidget(self.groupBox_info)
         self.treeView = QtWidgets.QTreeView(self.widget)
         self.treeView.setObjectName("treeView")
@@ -93,7 +91,10 @@ class Ui_Form(object):
         self.retranslateUi(Form)
         self.stackedWidget.setCurrentIndex(0)
         QtCore.QMetaObject.connectSlotsByName(Form)
-
+        
+        # 连接保存按钮点击事件
+       # self.pushButton_9.clicked.connect(self.save_data)
+            
     def retranslateUi(self, Form):
         _translate = QtCore.QCoreApplication.translate
         Form.setWindowTitle(_translate("Form", "Form"))
@@ -102,6 +103,5 @@ class Ui_Form(object):
         self.btn_step3.setText(_translate("Form", "3. 内容生成"))
         self.btn_step4.setText(_translate("Form", "4. 导出文档"))
         self.groupBox_info.setTitle(_translate("Form", "项目概览"))
-        self.label_project_name.setText(_translate("Form", "项目名称："))
         self.pushButton.setText(_translate("Form", "返回"))
         self.pushButton_9.setText(_translate("Form", "保存"))

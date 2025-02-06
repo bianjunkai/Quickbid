@@ -1,6 +1,7 @@
 from PyQt5 import QtWidgets
 from ui_main import Ui_Form
 from ui.basic_info_page import BasicInfoPage
+from core.data_model import BidData
 
 
 class MainWindow(QtWidgets.QMainWindow, Ui_Form):
@@ -10,49 +11,74 @@ class MainWindow(QtWidgets.QMainWindow, Ui_Form):
         
         # 初始化数据模型
         self.bid_data = BidData()
+        self.current_step = 0 
         
         # 按钮重命名和信号连接
-        self.btn_step1 = self.btn_step1
-        self.btn_step2 = self.btn_step2
-        self.btn_step3 = self.btn_step3
-        self.btn_step4 = self.btn_step4
+        #self.btn_step1 = self.btn_step1
+        #self.btn_step2 = self.btn_step2
+        #self.btn_step3 = self.btn_step3
+        #self.btn_step4 = self.btn_step4
+
+        # 连接保存按钮的点击事件
+        self.pushButton_9.clicked.connect(self.on_save_clicked)
         
         # 配置步骤导航
         self.steps = {
-            0: (self.btn_step1, BasicInfoPage),
-          #  1: (self.btn_step2, OutlinePage),
-           # 2: (self.btn_step3, ContentPage),
-           # 3: (self.btn_step4, ExportPage)
+            0: (self.btn_step1, BasicInfoPage)
         }
         
         # 初始化页面
         self.init_pages()
         
+
+
     def init_pages(self):
-        """初始化所有步骤页面"""
-        #self.stackedWidget.clear()
-        self.stackedWidget.addWidget(BasicInfoPage(self.bid_data))
-        for idx in self.steps.values():
-            page = idx[1](self.bid_data)
+        """初始化步骤页面"""
+        self.pages = [
+            BasicInfoPage(self.bid_data),
+            #OutlinePage(self.bid_data),
+            #ContentPage(self.bid_data),
+            #ExportPage(self.bid_data)
+        ]
+        
+        for page in self.pages:
             self.stackedWidget.addWidget(page)
-            
-        # 连接按钮点击事件
-        self.btn_step1.clicked.connect(lambda: self.switch_page(0))
-        self.btn_step2.clicked.connect(lambda: self.switch_page(1))
-        self.btn_step3.clicked.connect(lambda: self.switch_page(2))
-        self.btn_step4.clicked.connect(lambda: self.switch_page(3))
 
     def update_right_panel(self):
-        """更新右侧项目概览"""
+        """更新右侧信息展示"""
+        # 项目概览
         info = self.bid_data.info
-        self.lbl_project_name.setText(info.project_name)
-        self.lbl_project_code.setText(info.project_code)
-        self.lbl_bidder.setText(info.bidder)
-    
+        self.label_project_name.setText(f"项目名称：{info.project_name}")
+        self.label_project_code.setText(f"项目编号：{info.project_code}")
+        # self.label_bidder_credit_code.setText(f"统一信用代码：{info.bidder_credit_code}")
+        # 其他信息...
+        
+        # 实时更新按钮状态
+        self.pushButton_9.setEnabled(self.current_step < 3)  # 最后一步禁用保存
+        
     def switch_page(self, index):
         """切换步骤页面"""
-        self.stackedWidget.setCurrentIndex(index)
-        self.update_sidebar_style(index)
+        if 0 <= index < len(self.pages):
+            self.stackedWidget.setCurrentIndex(index)
+            self.update_nav_style(index)
+
+    def update_nav_style(self, active_index):
+        """更新导航按钮样式"""
+        buttons = [
+            self.pushButton_8,  # 基本信息按钮
+        #    self.pushButton_7,  # 目录设计按钮
+        #    self.pushButton_4,  # 内容生成按钮
+        #    self.pushButton_2   # 导出按钮
+        ]
+        
+        for idx, btn in enumerate(buttons):
+            btn.setStyleSheet("""
+                QPushButton { 
+                    background: %s; 
+                    text-align: left; 
+                    padding: 8px 
+                }
+            """ % ("#e0f0ff" if idx == active_index else "white"))
     
     def update_sidebar_style(self, active_index):
         """更新导航按钮样式"""
@@ -62,9 +88,40 @@ class MainWindow(QtWidgets.QMainWindow, Ui_Form):
             else:
                 btn.setStyleSheet("")
 
+
+    def on_save_clicked(self):
+        """保存按钮点击处理"""
+        if self.validate_current_step():
+            self.current_step += 1
+            self.switch_page(self.current_step)
+            self.update_right_panel()
+    
+    def validate_current_step(self):
+        """验证当前步骤数据完整性"""
+        if self.current_step == 0:  # 基本信息页验证
+            return self.validate_basic_info()
+        # 其他步骤的验证逻辑...
+        return True
+    
+    def validate_basic_info(self):
+        """验证必填字段"""
+        info = self.bid_data.info
+        required_fields = {
+            "项目名称": info.project_name,
+            "投标人": info.bidder,
+            "统一信用代码": info.bidder_credit_code
+        }
+        
+        missing = [name for name, value in required_fields.items() if not value.strip()]
+        if missing:
+            QtWidgets.QMessageBox.warning(self, "数据不完整", f"以下字段必填：{', '.join(missing)}")
+            return False
+        return True
+
+
+
 if __name__ == "__main__":
     import sys
-    from core.data_model import BidData  # 确保导入BidData
     
     app = QtWidgets.QApplication(sys.argv)
     window = MainWindow()

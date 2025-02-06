@@ -26,7 +26,25 @@ class ProjectInfo:
 
 class BidData(QObject):
     info_updated = pyqtSignal()  # 数据更新信号
+    property_changed = pyqtSignal(str, object)  # 属性变更信号
     
     def __init__(self):
         super().__init__()
         self.info = ProjectInfo()
+        self._setup_bindings()
+        
+    def _setup_bindings(self):
+        """设置数据绑定"""
+        for field in self.info.__dataclass_fields__:
+            setattr(self.info.__class__, field, self._create_property(field))
+            
+    def _create_property(self, field):
+        """创建属性描述符"""
+        def getter(obj):
+            return getattr(obj, f"_{field}")
+            
+        def setter(obj, value):
+            setattr(obj, f"_{field}", value)
+            self.property_changed.emit(field, value)
+            self.info_updated.emit()
+            
