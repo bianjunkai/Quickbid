@@ -1,6 +1,7 @@
 from PyQt5 import QtWidgets
 from ui_main import Ui_Form
 from ui.basic_info_page import BasicInfoPage
+from ui.OutlinePage import OutlinePage
 from core.data_model import BidData
 
 
@@ -19,12 +20,15 @@ class MainWindow(QtWidgets.QMainWindow, Ui_Form):
         #self.btn_step3 = self.btn_step3
         #self.btn_step4 = self.btn_step4
 
-        # 连接保存按钮的点击事件
+        # 连接按钮点击事件
         self.pushButton_9.clicked.connect(self.on_save_clicked)
+        self.btn_step1.clicked.connect(lambda: self.switch_page(0))  # 基本信息
+        self.btn_step2.clicked.connect(lambda: self.switch_page(1))  # 目录设计
         
         # 配置步骤导航
         self.steps = {
-            0: (self.btn_step1, BasicInfoPage)
+            0: (self.btn_step1, BasicInfoPage),
+            1: (self.btn_step2, OutlinePage)
         }
         
         # 初始化页面
@@ -36,7 +40,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_Form):
         """初始化步骤页面"""
         self.pages = [
             BasicInfoPage(self.bid_data),
-            #OutlinePage(self.bid_data),
+            OutlinePage(self.bid_data),
             #ContentPage(self.bid_data),
             #ExportPage(self.bid_data)
         ]
@@ -61,12 +65,13 @@ class MainWindow(QtWidgets.QMainWindow, Ui_Form):
         if 0 <= index < len(self.pages):
             self.stackedWidget.setCurrentIndex(index)
             self.update_nav_style(index)
+            self.update_sidebar_style(index)
 
     def update_nav_style(self, active_index):
         """更新导航按钮样式"""
         buttons = [
-            self.pushButton_8,  # 基本信息按钮
-        #    self.pushButton_7,  # 目录设计按钮
+            self.btn_step1,  # 基本信息按钮
+            self.btn_step2,  # 目录设计按钮
         #    self.pushButton_4,  # 内容生成按钮
         #    self.pushButton_2   # 导出按钮
         ]

@@ -35,6 +35,11 @@ class BidData(QObject):
         
     def _setup_bindings(self):
         """设置数据绑定"""
+        # 初始化存储字段
+        for field in self.info.__dataclass_fields__:
+            setattr(self.info, f"_{field}", getattr(self.info, field))
+            
+        # 创建属性描述符
         for field in self.info.__dataclass_fields__:
             setattr(self.info.__class__, field, self._create_property(field))
             
@@ -44,7 +49,8 @@ class BidData(QObject):
             return getattr(obj, f"_{field}")
             
         def setter(obj, value):
-            setattr(obj, f"_{field}", value)
-            self.property_changed.emit(field, value)
-            self.info_updated.emit()
-            
+            old_value = getattr(obj, f"_{field}")
+            if old_value != value:
+                setattr(obj, f"_{field}", value)
+                self.property_changed.emit(field, value)
+                self.info_updated.emit()
