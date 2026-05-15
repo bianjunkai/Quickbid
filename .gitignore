@@ -7,3 +7,4 @@ __pycache__/ui_main.cpython-39.pyc
 *.pyc
 node_modules/
 
+electron/*
