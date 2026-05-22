@@ -1,0 +1,34 @@
+# 标书制作工具配置文件
+# 注意：API Key 建议通过环境变量 TENDER_DEEPSEEK_API_KEY 传入
+
+tender_tool:
+  # 项目根目录
+  projects_dir: ~/tender-tool/projects
+
+  # 材料库根目录
+  materials_dir: ~/tender-tool/materials
+
+  # 导出输出目录
+  exports_dir: ~/tender-tool/exports
+
+  # AI 配置
+  ai:
+    provider: deepseek  # 目前只支持 deepseek
+    model: deepseek-chat
+    api_key_env: TENDER_DEEPSEEK_API_KEY  # 环境变量名
+
+  # 解析配置
+  parser:
+    supported_formats:
+      - pdf
+      - docx
+    key_info_count: 14  # K01-K14
+
+  # 材料库分类（预定义）
+  categories:
+    - 01_公司资质
+    - 02_业绩案例
+    - 03_技术方案
+    - 04_实施方案
+    - 05_商务文件
+    - 06_其他
