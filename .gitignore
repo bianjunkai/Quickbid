@@ -14,5 +14,13 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Node
+node_modules/
+
 # Project-specific (regenerate from source)
-.sesion.json
+.session.json
+
+# Runtime directories (track structure with .gitkeep)
+!materials/**/.gitkeep
+!projects/.gitkeep
+!exports/.gitkeep

@@ -1,6 +1,7 @@
 """
 标书制作工具 - 数据模型
 """
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -95,7 +96,11 @@ class MaterialUsage(Base):
 
 # ---- 数据库初始化 ----
 
-DB_PATH = Path.home() / "tender-tool" / "tender.db"
+_CONFIG_DIR = Path(__file__).parent
+_DEFAULT_DB = _CONFIG_DIR / "tender.db"
+if not _DEFAULT_DB.parent.exists():
+    _DEFAULT_DB = Path.home() / "tender-tool" / "tender.db"
+DB_PATH = os.environ.get("TENDER_DB_PATH", str(_DEFAULT_DB))
 
 def get_engine():
     return create_engine(f"sqlite:///{DB_PATH}", echo=False)

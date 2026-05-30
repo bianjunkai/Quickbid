@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Project } from '@/types'
+import {
+  listProjects,
+  getProject,
+  createProject as apiCreateProject,
+  deleteProject,
+} from '@/api'
 
 export const useProjectStore = defineStore('project', () => {
   const projects = ref<Project[]>([])
@@ -28,10 +34,8 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   const createProject = async (name: string, tenderFileName: string) => {
-    const res = await listProjects().catch(() => null)
-    // 调用实际的创建接口
-    const createRes = await listProjects()
-    return createRes
+    const res = await apiCreateProject({ name, tender_file_name: tenderFileName })
+    return res
   }
 
   const removeProject = async (id: number) => {

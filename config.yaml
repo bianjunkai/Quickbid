@@ -2,14 +2,14 @@
 # 注意：API Key 建议通过环境变量 TENDER_DEEPSEEK_API_KEY 传入
 
 tender_tool:
-  # 项目根目录
-  projects_dir: ~/tender-tool/projects
+  # 项目根目录（相对路径，基于 config.yaml 所在目录）
+  projects_dir: ./projects
 
   # 材料库根目录
-  materials_dir: ~/tender-tool/materials
+  materials_dir: ./materials
 
   # 导出输出目录
-  exports_dir: ~/tender-tool/exports
+  exports_dir: ./exports
 
   # AI 配置
   ai:

@@ -2,7 +2,9 @@
 标书制作工具 - FastAPI 主程序
 确认驱动的工作流：AI 做一步 → 用户确认/纠正 → 继续
 """
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -11,10 +13,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from models import init_db, get_session, Project, Tender, Material, TenderType, ProjectStatus
+from models import init_db, get_session, Project, Tender, Material
 
 # ---- 配置加载 ----
-CONFIG_PATH = Path.home() / "tender-tool" / "config.yaml"
+_CONFIG_DIR = Path(__file__).parent
+CONFIG_PATH = _CONFIG_DIR / "config.yaml"
+if not CONFIG_PATH.exists():
+    CONFIG_PATH = Path.home() / "tender-tool" / "config.yaml"
+os.environ.setdefault("TENDER_CONFIG_PATH", str(CONFIG_PATH))
 
 def load_config():
     with open(CONFIG_PATH) as f:
@@ -77,6 +83,15 @@ class ExportRequest(BaseModel):
     format: str  # "markdown" / "word" / "pdf"
 
 
+class CreateMaterialRequest(BaseModel):
+    title: str
+    category: str
+    description: str
+    content: str
+    content_type: str = "markdown"
+    tags: Optional[str] = None
+
+
 # ===========================
 # 路由
 # ===========================
@@ -107,7 +122,7 @@ def create_project(req: CreateProjectRequest):
     project = Project(
         name=req.name,
         tender_file_path=str(tender_path),
-        status=ProjectStatus.PARSING,
+        status="parsing",
     )
     session.add(project)
     session.commit()
@@ -130,7 +145,7 @@ def list_projects():
         {
             "id": p.id,
             "name": p.name,
-            "status": p.status.value if hasattr(p.status, 'value') else p.status,
+            "status": p.status,
             "created_at": p.created_at.isoformat(),
         }
         for p in projects
@@ -206,8 +221,8 @@ def parse_tender(project_id: int):
         "K14_演示要求": "待提取",
     }
 
-    project.parsed_data = str(parsed)
-    project.status = ProjectStatus.PARSED
+    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
+    project.status = "parsed"
     session.commit()
 
     return {
@@ -233,7 +248,7 @@ def confirm_parse(project_id: int, req: TenderParseConfirmRequest):
             if hasattr(project, key):
                 setattr(project, key, value)
 
-    project.status = ProjectStatus.MATERIALS_PREPARING
+    project.status = "materials_preparing"
     session.commit()
 
     return {
@@ -261,7 +276,7 @@ def list_materials(
         {
             "id": m.id,
             "title": m.title,
-            "category": m.category.value if hasattr(m.category, 'value') else m.category,
+            "category": m.category,
             "tags": m.tags,
             "description": m.description,
             "char_count": m.char_count,
@@ -273,28 +288,20 @@ def list_materials(
 
 
 @app.post("/materials")
-def create_material(
-    title: str,
-    category: str,
-    description: str,
-    content: str,
-    content_type: str = "markdown",
-    tags: Optional[str] = None,
-):
+def create_material(req: CreateMaterialRequest):
     """
     添加新材料到材料库。
     通常在材料文件放入 materials/ 目录后调用，更新数据库索引。
     """
-    import json
     session = get_session()
     material = Material(
-        title=title,
-        category=category,
-        description=description,
-        content=content,
-        content_type=content_type,
-        tags=tags,
-        char_count=len(content),
+        title=req.title,
+        category=req.category,
+        description=req.description,
+        content=req.content,
+        content_type=req.content_type,
+        tags=req.tags,
+        char_count=len(req.content),
     )
     session.add(material)
     session.commit()
@@ -352,12 +359,10 @@ def generate_tender(project_id: int, req: GenerateDraftRequest):
     if not project:
         raise HTTPException(404, "项目不存在")
 
-    tender_type = TenderType.MAIN if req.tender_type == "main" else TenderType.SUB
-
     # 创建标书记录
     tender = Tender(
         project_id=project_id,
-        type=tender_type,
+        type=req.tender_type,
         status="draft",
     )
     session.add(tender)
@@ -370,7 +375,7 @@ def generate_tender(project_id: int, req: GenerateDraftRequest):
     # 3. 生成偏离表
     # 4. 保存 draft_path / deviation_path
 
-    project.status = ProjectStatus.GENERATING
+    project.status = "generating"
     session.commit()
 
     return {

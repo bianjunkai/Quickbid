@@ -40,4 +40,9 @@ export const exportTender = (id: number, format: 'markdown' | 'word' | 'pdf') =>
 export const listMaterials = (params?: { category?: string; keyword?: string }) =>
   api.get('/materials', { params })
 
+export const createMaterial = (data: {
+  title: string; category: string; description: string;
+  content: string; content_type?: string; tags?: string;
+}) => api.post('/materials', data)
+
 export default api

@@ -11,7 +11,10 @@ from typing import Any, Optional
 import yaml
 
 # ---- 配置加载 ----
-CONFIG_PATH = Path.home() / "tender-tool" / "config.yaml"
+_CONFIG_DIR = Path(__file__).parent
+CONFIG_PATH = _CONFIG_DIR / "config.yaml"
+if not CONFIG_PATH.exists():
+    CONFIG_PATH = Path.home() / "tender-tool" / "config.yaml"
 
 def load_config():
     with open(CONFIG_PATH) as f:
