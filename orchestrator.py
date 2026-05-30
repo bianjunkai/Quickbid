@@ -14,6 +14,7 @@ from agents.matcher_agent import MatcherAgent
 from agents.generator_agent import GeneratorAgent
 from agents.reviewer_agent import ReviewerAgent
 from agents.subbid_agent import SubBidAgent
+from models import init_db, get_session, Project, Tender
 
 
 class WorkflowStep(str):
@@ -97,7 +98,6 @@ class Orchestrator:
         Returns:
             {parsed, matches, draft, main_review, sub_draft, sub_review}
         """
-        from models import get_session, Project
         self.ctx.project_id = project_id
         self.ctx.tender_type = tender_type
 
@@ -128,7 +128,6 @@ class Orchestrator:
         draft_content = gen_result.get("content", "")
 
         # 创建 Tender 记录
-        from models import Tender
         tender = Tender(project_id=project_id, type="main", status="draft")
         session.add(tender)
         session.commit()
@@ -209,7 +208,6 @@ class Orchestrator:
         if not re.search(r"放好了|上传了|好了", msg):
             return {"message": "请把招标文件放到指定路径，然后说「放好了」"}
 
-        from models import get_session, Project
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
         if not project:
@@ -222,7 +220,6 @@ class Orchestrator:
         return self._do_parse(project)
 
     def _handle_await_parse_confirm(self, msg: str) -> dict[str, Any]:
-        from models import get_session, Project
         corrections = self._extract_corrections(msg)
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
@@ -295,7 +292,6 @@ class Orchestrator:
     # ================================================================
 
     def _create_project(self, name: str) -> dict[str, Any]:
-        from models import init_db, get_session, Project
         init_db()
         session = get_session()
         safe_name = re.sub(r"[^\w\-]", "_", name)
@@ -325,7 +321,6 @@ class Orchestrator:
         }
 
     def _do_parse(self, project) -> dict[str, Any]:
-        from models import get_session
         self.step = WorkflowStep.PARSING
 
         self.ctx.parsed_data["K01_项目名称"] = project.name
@@ -354,7 +349,6 @@ class Orchestrator:
         gen_result = self.agents["generator"].execute(self.ctx)
 
         # 创建 Tender 记录
-        from models import get_session, Tender, Project
         session = get_session()
         tender = Tender(project_id=self.ctx.project_id, type="main", status="draft")
         session.add(tender)
@@ -425,7 +419,6 @@ class Orchestrator:
             retry += 1
 
         # 保存陪标 Tender 记录
-        from models import get_session, Tender
         session = get_session()
         sub_tender = Tender(project_id=self.ctx.project_id, type="sub", status="draft")
         session.add(sub_tender)
@@ -474,7 +467,6 @@ class Orchestrator:
         return corrections
 
     def _resume_from_last_step(self) -> dict[str, Any]:
-        from models import get_session, Project
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
         step_msgs = {
@@ -493,7 +485,6 @@ class Orchestrator:
     def _show_current_project(self) -> dict[str, Any]:
         if not self.ctx.project_id:
             return {"message": "当前没有进行中的项目"}
-        from models import get_session, Project
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
         if not project:
@@ -533,7 +524,15 @@ class Orchestrator:
             return
         try:
             data = json.loads(self.SESSION_FILE.read_text())
+            ctx_data = data.get("context", {})
+            pid = ctx_data.get("project_id")
+            # 验证项目仍存在于 DB
+            if pid:
+                session = get_session()
+                project = session.get(Project, pid)
+                if not project:
+                    return  # 项目已删除，丢弃旧 session
             self.step = WorkflowStep(data.get("step", "idle"))
-            self.ctx.update_from_dict(data.get("context", {}))
+            self.ctx.update_from_dict(ctx_data)
         except Exception:
             pass
