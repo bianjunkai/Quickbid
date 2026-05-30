@@ -28,6 +28,10 @@ npm run dev                   # http://localhost:5173，API 代理到 :8000
 
 无测试套件。验证方式：`python -c "from models import init_db; print('OK')"` 和手动端到端测试。
 
+## Git 规则
+
+**默认只 `git commit` 本地，不 push。** 仅在用户明确要求（如"推到远端""push""同步到Git"）时才执行 `git push`。
+
 ## 架构核心
 
 ### 双层入口 → 共享编排器
