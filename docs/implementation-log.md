@@ -80,6 +80,13 @@ Quickbid/
 └── web/                     ← 已修复（api/store/style）
 ```
 
+### 环境约定
+
+- **Python 虚拟环境**：使用 `uv` 管理，禁止安装到全局 Python
+  - `uv venv` 创建环境
+  - `uv pip install -r requirements.txt` 安装依赖
+  - `.venv/`、`.python-version`、`uv.lock` 已加入 .gitignore
+
 ### 后续待处理
 
 - Phase 3：多 Agent 框架搭建（agents/ + orchestrator.py）

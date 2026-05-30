@@ -4,11 +4,15 @@ __pycache__/
 *.db
 *.sqlite
 
+# Virtual environment (uv)
+.venv/
+venv/
+.python-version
+uv.lock
+
 # Environment
 .env
 .env.local
-venv/
-.venv/
 
 # OS
 .DS_Store
