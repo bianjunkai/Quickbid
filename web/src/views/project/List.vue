@@ -22,11 +22,16 @@
           <el-button link type="danger" @click="handleDelete(row.id)">删除</el-button>
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty description="暂无项目">
+          <el-button type="primary" @click="showCreateDialog = true">新建项目</el-button>
+        </el-empty>
+      </template>
     </el-table>
 
     <el-dialog v-model="showCreateDialog" title="新建项目" width="500px">
       <el-form :model="createForm" label-width="120px">
-        <el-form-item label="项目名称">
+        <el-form-item label="项目名称" required>
           <el-input v-model="createForm.name" placeholder="例如：XX医院信息系统投标" />
         </el-form-item>
         <el-form-item label="招标文件名">
@@ -56,31 +61,25 @@ const showCreateDialog = ref(false)
 const creating = ref(false)
 const createForm = ref({ name: '', tender_file_name: '' })
 
-const statusType = (status: string) => {
-  const map: Record<string, any> = {
-    parsed: 'success',
-    parsing: 'warning',
-    generating: 'info',
-  }
-  return map[status] || ''
+const STATUS_MAP: Record<string, { type: string; text: string }> = {
+  parsing: { type: 'warning', text: '解析中' },
+  parsed: { type: 'success', text: '已解析' },
+  materials_preparing: { type: '', text: '材料准备' },
+  generating: { type: 'info', text: '生成中' },
+  reviewing: { type: 'info', text: '审查中' },
+  done: { type: 'success', text: '已完成' },
 }
 
-const statusText = (status: string) => {
-  const map: Record<string, string> = {
-    parsing: '解析中',
-    parsed: '已解析',
-    materials_preparing: '材料准备',
-    generating: '生成中',
-    generated: '已生成',
-  }
-  return map[status] || status
-}
+const statusType = (s: string) => STATUS_MAP[s]?.type || ''
+const statusText = (s: string) => STATUS_MAP[s]?.text || s
 
 const fetchData = async () => {
   loading.value = true
   try {
     const res = await listProjects()
     projects.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载项目列表失败')
   } finally {
     loading.value = false
   }
@@ -99,37 +98,30 @@ const handleCreate = async () => {
     createForm.value = { name: '', tender_file_name: '' }
     fetchData()
   } catch (e: any) {
-    ElMessage.error(e?.message || '创建失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '创建失败')
   } finally {
     creating.value = false
   }
 }
 
 const handleDelete = async (id: number) => {
-  await ElMessageBox.confirm('确定删除此项目？', '提示', { type: 'warning' })
-  await deleteProject(id)
-  ElMessage.success('已删除')
-  fetchData()
+  try {
+    await ElMessageBox.confirm('确定删除此项目？', '提示', { type: 'warning' })
+    await deleteProject(id)
+    ElMessage.success('已删除')
+    fetchData()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  }
 }
 
-const goDetail = (id: number) => {
-  router.push(`/projects/${id}`)
-}
+const goDetail = (id: number) => router.push(`/projects/${id}`)
 
 onMounted(fetchData)
 </script>
 
 <style scoped>
-.project-list {
-  padding: 20px;
-}
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-.header h2 {
-  margin: 0;
-}
+.project-list { padding: 20px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.header h2 { margin: 0; }
 </style>
