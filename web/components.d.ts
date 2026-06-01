@@ -27,11 +27,14 @@ declare module 'vue' {
     ElTable: typeof import('element-plus/es')['ElTable']
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTag: typeof import('element-plus/es')['ElTag']
+    EmptyHint: typeof import('./src/components/EmptyHint.vue')['default']
     FileFolder: typeof import('./src/components/FileFolder.vue')['default']
     FilePanel: typeof import('./src/components/FilePanel.vue')['default']
+    GeneratedFile: typeof import('./src/components/GeneratedFile.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     TypingIndicator: typeof import('./src/components/TypingIndicator.vue')['default']
+    UploadHint: typeof import('./src/components/UploadHint.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']
