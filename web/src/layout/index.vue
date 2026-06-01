@@ -1,70 +1,82 @@
 <template>
   <div class="app-shell">
-    <!-- Sidebar -->
     <aside class="sidebar">
+      <!-- Brand -->
       <div class="sidebar-brand" @click="$router.push('/projects')">
-        <div class="brand-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        <div class="brand-mark">
+          <svg width="24" height="24" viewBox="0 0 32 32" fill="none">
+            <rect x="4" y="8" width="24" height="18" rx="2" stroke="currentColor" stroke-width="1.8" />
+            <line x1="8" y1="14" x2="18" y2="14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            <line x1="8" y1="18" x2="14" y2="18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            <line x1="8" y1="22" x2="22" y2="22" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            <circle cx="25" cy="16" r="3.5" fill="var(--qb-accent)" stroke="var(--qb-accent)" stroke-width="1" />
+          </svg>
         </div>
         <div class="brand-text">
           <span class="brand-name">QuickBid</span>
-          <span class="brand-tag">AI 标书助手</span>
+          <span class="brand-sub">标书制作引擎</span>
         </div>
       </div>
 
-      <!-- Project list (compact) -->
+      <!-- Projects -->
       <div class="sidebar-section">
-        <div class="sidebar-section-header">
+        <div class="sidebar-label">
           <span>项目</span>
-          <button class="sidebar-add-btn" @click="showNewProject = true" title="新建项目">+</button>
+          <button class="sidebar-add" @click="showNewProject = true" title="新建">+</button>
         </div>
         <div class="project-list">
           <div
-            v-for="p in projects"
-            :key="p.id"
+            v-for="p in projects" :key="p.id"
             class="project-item"
-            :class="{ active: p.id === activeProjectId }"
+            :class="{ active: p.id === activeId }"
             @click="$router.push(`/projects/${p.id}`)"
           >
             <span class="project-item-name">{{ p.name }}</span>
+            <span class="project-item-status" :class="p.status" />
           </div>
-          <div v-if="projects.length === 0" class="sidebar-empty">暂无项目</div>
+          <div v-if="!projects.length" class="sidebar-empty">暂无项目</div>
         </div>
       </div>
 
-      <!-- Navigation -->
+      <!-- Nav -->
       <div class="sidebar-nav">
-        <router-link to="/materials" class="sidebar-nav-item" active-class="active">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <router-link to="/materials" class="nav-item" active-class="active">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <span>材料库</span>
         </router-link>
       </div>
 
-      <!-- New project dialog (simple) -->
-      <Teleport to="body">
-        <div v-if="showNewProject" class="modal-overlay" @click.self="showNewProject = false">
-          <div class="modal-card">
-            <h3>新建项目</h3>
-            <input
-              ref="newProjectInput"
-              v-model="newProjectName"
-              class="modal-input"
-              placeholder="项目名称，例如：XX医院HIS投标"
-              @keydown.enter="createNewProject"
-            />
-            <div class="modal-actions">
-              <button class="modal-btn cancel" @click="showNewProject = false">取消</button>
-              <button class="modal-btn confirm" @click="createNewProject" :disabled="!newProjectName.trim()">创建</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <span class="footer-dot" />
+        <span class="footer-text">系统就绪</span>
+      </div>
     </aside>
 
-    <!-- Main content -->
     <main class="main-content">
       <router-view />
     </main>
+
+    <!-- New project modal -->
+    <Teleport to="body">
+      <div v-if="showNewProject" class="modal-backdrop" @click.self="showNewProject = false">
+        <div class="modal-card anim-scale-in">
+          <h3 class="modal-title">新建标书项目</h3>
+          <p class="modal-desc">输入项目名称，AI 助手将引导你完成标书制作。</p>
+          <input
+            ref="newProjectInput"
+            v-model="newProjectName"
+            class="modal-input"
+            placeholder="例如：XX医院HIS系统投标"
+            @keydown.enter="createNewProject"
+          />
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="showNewProject = false">取消</button>
+            <button class="btn btn-primary" @click="createNewProject" :disabled="!newProjectName.trim()">创建项目</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -74,25 +86,19 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listProjects, createProject } from '@/api'
 import type { Project } from '@/types'
-import router from '@/router'
 
 const route = useRoute()
+const router = useRouter()
 
 const projects = ref<Project[]>([])
 const showNewProject = ref(false)
 const newProjectName = ref('')
 const newProjectInput = ref<HTMLInputElement>()
 
-const activeProjectId = computed(() => {
-  const id = Number(route.params.id)
-  return isNaN(id) ? null : id
-})
+const activeId = computed(() => Number(route.params.id) || null)
 
 const fetchProjects = async () => {
-  try {
-    const res = await listProjects()
-    projects.value = res.data
-  } catch { /* sidebar is non-critical */ }
+  try { projects.value = (await listProjects()).data } catch { /* */ }
 }
 
 const createNewProject = async () => {
@@ -100,29 +106,22 @@ const createNewProject = async () => {
   if (!name) return
   try {
     const res = await createProject({ name, tender_file_name: 'tender.pdf' })
-    showNewProject.value = false
-    newProjectName.value = ''
+    showNewProject.value = false; newProjectName.value = ''
     router.push(`/projects/${res.data.project_id}`)
     fetchProjects()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '创建失败')
-  }
+  } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '创建失败') }
 }
 
 onMounted(fetchProjects)
 </script>
 
 <style scoped>
-.app-shell {
-  display: flex;
-  height: 100vh;
-  background: var(--qb-bg);
-}
+.app-shell { display: flex; height: 100vh; }
 
-/* Sidebar */
+/* ── Sidebar ── */
 .sidebar {
-  width: 240px;
-  background: var(--qb-sidebar);
+  width: 248px;
+  background: var(--qb-surface);
   border-right: 1px solid var(--qb-border);
   display: flex;
   flex-direction: column;
@@ -130,157 +129,118 @@ onMounted(fetchProjects)
 }
 
 .sidebar-brand {
-  padding: 18px 20px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  padding: 20px 20px 18px;
   border-bottom: 1px solid var(--qb-border);
   cursor: pointer;
-  transition: background var(--qb-transition);
+  transition: background 150ms var(--qb-ease);
 }
-.sidebar-brand:hover { background: rgba(0,0,0,0.02); }
-.brand-icon { color: var(--qb-primary); }
+.sidebar-brand:hover { background: var(--qb-paper); }
+.brand-mark { color: var(--qb-primary); flex-shrink: 0; }
 .brand-name {
-  font-family: var(--qb-font-heading);
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--qb-text);
+  font-family: var(--qb-font-display);
+  font-size: 19px;
+  font-weight: 400;
+  color: var(--qb-ink);
+  line-height: 1.2;
 }
-.brand-tag {
+.brand-sub {
   display: block;
   font-size: 11px;
-  color: var(--qb-text-secondary);
-  letter-spacing: 0.3px;
-}
-
-/* Section header */
-.sidebar-section {
-  padding: 16px 16px 8px;
-  flex: 1;
-  overflow-y: auto;
-}
-.sidebar-section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--qb-text-secondary);
+  color: var(--qb-ink-light);
+  opacity: 0.6;
+  letter-spacing: 1px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 8px;
-  padding: 0 4px;
+  margin-top: 1px;
 }
-.sidebar-add-btn {
-  width: 22px; height: 22px;
-  border-radius: 50%;
-  border: 1px solid var(--qb-border);
-  background: white;
-  color: var(--qb-text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all var(--qb-transition);
-}
-.sidebar-add-btn:hover { background: var(--qb-primary); color: white; border-color: var(--qb-primary); }
 
-.project-list { display: flex; flex-direction: column; }
+/* ── Section ── */
+.sidebar-section { padding: 16px 16px 8px; flex: 1; overflow-y: auto; }
+.sidebar-label {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; font-weight: 700; color: var(--qb-ink-light);
+  text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; padding: 0 4px;
+}
+.sidebar-add {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 1px solid var(--qb-border); background: var(--qb-surface);
+  color: var(--qb-ink-light); cursor: pointer; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 150ms var(--qb-ease);
+}
+.sidebar-add:hover { background: var(--qb-primary); color: white; border-color: var(--qb-primary); }
+
 .project-item {
-  padding: 8px 12px;
-  border-radius: var(--qb-radius-sm);
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--qb-text);
-  transition: all var(--qb-transition);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-radius: var(--qb-radius-sm); cursor: pointer;
+  font-size: 13px; color: var(--qb-ink); transition: all 150ms var(--qb-ease);
 }
-.project-item:hover { background: rgba(37,99,235,0.06); }
-.project-item.active {
-  background: rgba(37,99,235,0.1);
-  color: var(--qb-primary);
-  font-weight: 500;
+.project-item:hover { background: var(--qb-primary-pale); }
+.project-item.active { background: var(--qb-primary-pale); color: var(--qb-primary); font-weight: 500; }
+.project-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-item-status {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: #CBD5E1;
 }
-.sidebar-empty { font-size: 12px; color: #94A3B8; padding: 8px 12px; }
+.project-item-status.parsed { background: var(--qb-success); }
+.project-item-status.generating { background: var(--qb-accent); }
+.project-item-status.done { background: var(--qb-primary); }
+.sidebar-empty { font-size: 12px; color: #B5AFA5; padding: 8px 12px; }
 
-/* Nav */
-.sidebar-nav {
-  padding: 8px 16px 16px;
-  border-top: 1px solid var(--qb-border);
+/* ── Nav ── */
+.sidebar-nav { padding: 8px 16px 12px; border-top: 1px solid var(--qb-border); }
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: var(--qb-radius-sm);
+  font-size: 13px; color: var(--qb-ink-light); text-decoration: none;
+  transition: all 150ms var(--qb-ease);
 }
-.sidebar-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: var(--qb-radius-sm);
-  font-size: 13px;
-  color: var(--qb-text-secondary);
-  text-decoration: none;
-  transition: all var(--qb-transition);
-}
-.sidebar-nav-item:hover { background: rgba(0,0,0,0.03); color: var(--qb-text); }
-.sidebar-nav-item.active { background: rgba(37,99,235,0.08); color: var(--qb-primary); font-weight: 500; }
+.nav-item:hover { background: var(--qb-primary-pale); color: var(--qb-primary); }
+.nav-item.active { background: var(--qb-primary-pale); color: var(--qb-primary); font-weight: 500; }
 
-/* Main */
+/* ── Footer ── */
+.sidebar-footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 20px; border-top: 1px solid var(--qb-border);
+}
+.footer-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--qb-success); }
+.footer-text { font-size: 11px; color: var(--qb-ink-light); opacity: 0.6; }
+
+/* ── Main ── */
 .main-content { flex: 1; min-width: 0; }
 
-/* New project modal */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.3);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+/* ── Modal ── */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(26,26,46,0.4);
+  backdrop-filter: blur(4px); display: flex; align-items: center;
+  justify-content: center; z-index: 1000;
 }
 .modal-card {
-  background: white;
-  border-radius: 12px;
-  padding: 24px;
-  width: 400px;
-  max-width: 90vw;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  background: var(--qb-surface); border-radius: var(--qb-radius-lg);
+  padding: 32px; width: 420px; max-width: 90vw;
+  box-shadow: var(--qb-shadow-lg);
 }
-.modal-card h3 {
-  margin: 0 0 16px;
-  font-family: var(--qb-font-heading);
-  font-size: 18px;
-}
+.modal-title { margin: 0 0 8px; font-family: var(--qb-font-display); font-size: 22px; font-weight: 400; color: var(--qb-ink); }
+.modal-desc { font-size: 14px; color: var(--qb-ink-light); opacity: 0.7; margin: 0 0 20px; }
 .modal-input {
-  width: 100%;
-  padding: 10px 14px;
-  font-size: 15px;
-  font-family: var(--qb-font-body);
-  border: 1px solid var(--qb-border);
-  border-radius: 8px;
-  outline: none;
-  box-sizing: border-box;
+  width: 100%; padding: 10px 14px; font-size: 15px; font-family: var(--qb-font-body);
+  border: 1px solid var(--qb-border); border-radius: var(--qb-radius-sm); outline: none;
+  box-sizing: border-box; transition: border-color 150ms var(--qb-ease);
+  color: var(--qb-ink); background: var(--qb-paper);
 }
-.modal-input:focus { border-color: var(--qb-primary); }
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 16px;
+.modal-input:focus { border-color: var(--qb-primary); background: var(--qb-surface); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+.btn {
+  padding: 9px 22px; border-radius: var(--qb-radius-sm); font-size: 14px;
+  font-family: var(--qb-font-body); cursor: pointer; border: none; font-weight: 500;
+  transition: all 150ms var(--qb-ease);
 }
-.modal-btn {
-  padding: 8px 20px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-family: var(--qb-font-body);
-  cursor: pointer;
-  border: none;
-  transition: all var(--qb-transition);
-}
-.modal-btn.cancel { background: #F1F5F9; color: var(--qb-text-secondary); }
-.modal-btn.cancel:hover { background: #E2E8F0; }
-.modal-btn.confirm { background: var(--qb-primary); color: white; }
-.modal-btn.confirm:hover { background: #1D4ED8; }
-.modal-btn.confirm:disabled { background: #CBD5E1; cursor: not-allowed; }
+.btn-ghost { background: var(--qb-paper); color: var(--qb-ink-light); }
+.btn-ghost:hover { background: var(--qb-border); }
+.btn-primary { background: var(--qb-primary); color: white; }
+.btn-primary:hover { background: var(--qb-primary-light); }
+.btn-primary:disabled { background: #CBD5E1; cursor: not-allowed; }
 </style>
