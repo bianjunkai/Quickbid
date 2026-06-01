@@ -1,68 +1,72 @@
 # QuickBid Design System
 
-> 由 UI/UX Pro Max 生成，基于 Data-Dense Dashboard 风格
+> AI-Native UI — Chatbot, conversational, ambient, minimal chrome
 
-## Style
+## Style: AI-Native UI
 
-**Data-Dense Dashboard** — multiple charts/widgets, data tables, KPI cards, minimal padding, grid layout, space-efficient, maximum data visibility.
+Chatbot-first conversation interface. AI做一步 → 用户确认/纠正 → 继续。每条消息就是一个工作流步骤，用户通过自然对话完成标书制作。
 
-最适合：企业级运营面板、数据分析、招投标工具
+**Key Effects**: Typing indicators (3-dot pulse), streaming text, smooth message reveals, context cards
+**Anti-patterns**: Heavy chrome, wizard steps, slow response, spinner for >3s
 
-## Colors
+## Layout
 
-| Role | Hex | Tailwind | Usage |
-|------|-----|----------|-------|
-| Primary | `#2563EB` | `blue-600` | 主按钮、链接、选中态、品牌色 |
-| Secondary | `#3B82F6` | `blue-500` | 次要操作、悬停态 |
-| CTA | `#F97316` | `orange-500` | 关键行动按钮 |
-| Background | `#F8FAFC` | `slate-50` | 页面背景 |
-| Surface | `#FFFFFF` | `white` | 卡片、表格背景 |
-| Text Primary | `#1E293B` | `slate-800` | 正文 |
-| Text Secondary | `#64748B` | `slate-500` | 辅助文字 |
-| Border | `#E2E8F0` | `slate-200` | 边框、分割线 |
-| Success | `#16A34A` | `green-600` | 通过/成功 |
-| Warning | `#F59E0B` | `amber-500` | 警告 |
-| Danger | `#DC2626` | `red-600` | 失败/危险 |
+```
+┌──────────┬─────────────────────────────────────┐
+│ Sidebar  │  Chat Messages                       │
+│ 220px    │                                      │
+│          │  [AI] 你好！我是标书制作助手...        │
+│ Projects │  [User] 新建项目：xx医院HIS投标        │
+│ Materials│  [AI] ✅ 项目已创建，请上传招标文件...  │
+│          │  [User] 放好了                        │
+│          │  [AI] 📋 解析完成！K01-K14...          │
+│          │  [Quick Replies] [继续] [修改预算]     │
+│          ├──────────────────────────────────────│
+│          │  [Input_____________________] [Send]  │
+└──────────┴─────────────────────────────────────┘
+```
+
+## Colors — Blue + White Messenger Style
+
+| Role | Hex | Usage |
+|------|-----|-------|
+| Primary | `#2563EB` | AI message accent, links, send button |
+| Primary Light | `#EFF6FF` | AI message bubble background |
+| User Bubble | `#2563EB` | User message bubble (filled) |
+| User Text | `#FFFFFF` | Text on user bubble |
+| Background | `#FFFFFF` | Main chat background |
+| Sidebar | `#F8FAFC` | Sidebar background |
+| Border | `#E2E8F0` | Dividers |
+| Text Primary | `#1E293B` | Message text |
+| Text Secondary | `#64748B` | Timestamps, hints |
+| Success | `#16A34A` | Confirmation |
+| Warning | `#F59E0B` | Warnings |
 
 ## Typography
 
 | Role | Font | Weight | Size |
 |------|------|--------|------|
-| Page Heading | Fira Code | 600 | 24px |
-| Section Heading | Fira Code | 500 | 18px |
-| Body | Fira Sans | 400 | 14px |
-| Label | Fira Sans | 500 | 13px |
-| Code/Data | Fira Code | 400 | 13px |
-| Stats/Numbers | Fira Code | 600 | 28px |
+| Heading | Outfit | 600 | 20px |
+| Body | Work Sans | 400 | 15px |
+| Code/Data | JetBrains Mono | 400 | 13px |
 
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Work+Sans:wght@300;400;500;600&display=swap');
 ```
-
-## Spacing (4px base)
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `xs` | 4px | 紧凑内边距 |
-| `sm` | 8px | 元素间隔 |
-| `md` | 16px | 组件内边距 |
-| `lg` | 24px | 区块间隔 |
-| `xl` | 32px | 页面区块 |
-| `2xl` | 48px | 大区块分离 |
 
 ## Effects
 
-- Hover: 行高亮 (`background-color` 变化 150ms)
-- Focus: 2px 蓝色环 (`#2563EB`)
-- Loading: 骨架屏 (skeleton)，非空白 spinner
-- 过渡: 150-300ms `ease-out`
-- 卡片: 1px border，无阴影 (扁平风格)
-- 数据强调: 色彩 + 数字加粗
+- Message reveal: fadeInUp 200ms ease-out
+- Typing indicator: 3-dot pulse (scale 0→1→0, staggered)
+- Send button: subtle scale on press
+- Quick replies: chip buttons, hover bg shift 150ms
+- Streaming: typewriter effect for AI responses (Phase 6)
+- Cards in messages: 1px border, 8px radius, subtle shadow on hover
 
-## Anti-Patterns (避免)
+## Anti-Patterns
 
-- 装饰性设计（无意义的渐变/阴影）
-- 缺少筛选/搜索
-- Emoji 作为图标
-- 静态表格无排序
-- 操作无反馈
+- Wizard step indicators
+- Heavy navigation chrome
+- Spinners for >3s (use typing indicator instead)
+- Decorations that distract from conversation
+- Non-streaming static AI text

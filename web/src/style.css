@@ -1,59 +1,62 @@
-/* QuickBid Design System — Data-Dense Dashboard
+/* QuickBid Design System — AI-Native UI
    Tokens: docs/design-system.md */
 
-/* ---- Design Tokens ---- */
 :root {
   --qb-primary: #2563EB;
-  --qb-primary-light: #3B82F6;
-  --qb-cta: #F97316;
-  --qb-bg: #F8FAFC;
-  --qb-surface: #FFFFFF;
+  --qb-primary-light: #EFF6FF;
+  --qb-user-bubble: #2563EB;
+  --qb-user-text: #FFFFFF;
+  --qb-bg: #FFFFFF;
+  --qb-sidebar: #F8FAFC;
+  --qb-border: #E2E8F0;
   --qb-text: #1E293B;
   --qb-text-secondary: #64748B;
-  --qb-border: #E2E8F0;
   --qb-success: #16A34A;
   --qb-warning: #F59E0B;
   --qb-danger: #DC2626;
 
-  --qb-font-body: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --qb-font-mono: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+  --qb-font-heading: 'Outfit', system-ui, sans-serif;
+  --qb-font-body: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
-  --qb-radius: 6px;
+  --qb-radius: 10px;
+  --qb-radius-sm: 6px;
   --qb-transition: 150ms ease-out;
 }
 
-/* ---- Base Reset ---- */
+* { box-sizing: border-box; }
+
 body {
   margin: 0;
   font-family: var(--qb-font-body);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.6;
   color: var(--qb-text);
   background: var(--qb-bg);
   -webkit-font-smoothing: antialiased;
 }
 
-#app {
-  min-height: 100vh;
-}
+#app { height: 100vh; }
 
-/* ---- Element Plus Theme Overrides ---- */
+/* Element Plus overrides — minimal */
 :root {
   --el-color-primary: var(--qb-primary);
-  --el-color-primary-light-3: var(--qb-primary-light);
   --el-font-family: var(--qb-font-body);
-  --el-border-radius-base: var(--qb-radius);
+  --el-border-radius-base: var(--qb-radius-sm);
 }
 
-/* Tighten card spacing for data density */
-.el-card__body {
-  padding: 16px;
-}
-.el-card__header {
-  padding: 12px 16px;
-}
+/* Scrollbar — subtle */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
 
-/* Code/data use mono font */
-code, pre, .el-statistic__number {
-  font-family: var(--qb-font-mono);
+/* Animations */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.15); opacity: 0.5; }
+}
+.anim-fade-up { animation: fadeInUp 200ms ease-out; }

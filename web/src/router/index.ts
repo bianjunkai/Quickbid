@@ -6,10 +6,7 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     component: () => import('@/layout/index.vue'),
     children: [
-      {
-        path: '',
-        redirect: '/projects',
-      },
+      { path: '', redirect: '/projects' },
       {
         path: '/projects',
         name: 'ProjectList',
@@ -17,8 +14,8 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: '/projects/:id',
-        name: 'ProjectDetail',
-        component: () => import('@/views/project/Detail.vue'),
+        name: 'ProjectChat',
+        component: () => import('@/views/ChatView.vue'),
       },
       {
         path: '/materials',
