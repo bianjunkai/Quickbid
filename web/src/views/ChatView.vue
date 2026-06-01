@@ -1,7 +1,9 @@
 <template>
   <div class="chat-view" v-loading="projectLoading">
-    <!-- Header bar -->
-    <div class="chat-header">
+    <div class="chat-body">
+      <div class="chat-main">
+        <!-- Header bar -->
+        <div class="chat-header">
       <div class="chat-header-left">
         <span class="project-name">{{ project?.name || '加载中...' }}</span>
         <span v-if="project" class="project-status" :class="project.status">{{ statusLabel }}</span>
@@ -66,9 +68,18 @@
       :disabled="waiting"
       :sending="waiting"
       :quick-replies="quickReplies"
-      @send="handleSend"
-      @quick-reply="handleQuickReply"
-    />
+        @send="handleSend"
+        @quick-reply="handleQuickReply"
+      />
+      </div>
+      <!-- File panel -->
+      <FilePanel
+        :project-name="project?.name"
+        :tender-file="tenderFileName"
+        :sub-bids="subBids"
+        @add-subbid="handleAddSubBid"
+      />
+    </div>
   </div>
 </template>
 
@@ -83,6 +94,8 @@ import {
 import ChatMessage from '@/components/ChatMessage.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import TypingIndicator from '@/components/TypingIndicator.vue'
+import FilePanel from '@/components/FilePanel.vue'
+import type { SubBid } from '@/components/FilePanel.vue'
 import type { Project } from '@/types'
 
 interface ChatMsg {
@@ -108,6 +121,13 @@ const waiting = ref(false)
 const errorMsg = ref('')
 const inputRef = ref<InstanceType<typeof ChatInput>>()
 const messagesEl = ref<HTMLElement>()
+const subBids = ref<SubBid[]>([])
+
+const tenderFileName = computed(() => {
+  const path = project.value?.tender_file_path
+  if (!path) return ''
+  return path.split(/[/\\]/).pop() || ''
+})
 
 let msgId = 0
 const now = () => new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
@@ -270,15 +290,31 @@ const handleQuickReply = (value: string) => {
   handleSend(value)
 }
 
+const handleAddSubBid = () => {
+  // 通过对话添加陪标：提示用户输入公司名
+  addMsg({ role: 'ai', content: '请输入陪标公司名称，例如：「XX科技有限公司」', time: now() })
+  inputRef.value?.focus()
+}
+
 onMounted(fetchProject)
 </script>
 
 <style scoped>
 .chat-view {
-  display: flex;
-  flex-direction: column;
   height: 100%;
   background: var(--qb-bg);
+}
+
+.chat-body {
+  display: flex;
+  height: 100%;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 /* Header */

@@ -27,6 +27,8 @@ declare module 'vue' {
     ElTable: typeof import('element-plus/es')['ElTable']
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTag: typeof import('element-plus/es')['ElTag']
+    FileFolder: typeof import('./src/components/FileFolder.vue')['default']
+    FilePanel: typeof import('./src/components/FilePanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     TypingIndicator: typeof import('./src/components/TypingIndicator.vue')['default']
