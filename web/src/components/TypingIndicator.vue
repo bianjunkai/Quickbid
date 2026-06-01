@@ -1,34 +1,21 @@
 <template>
-  <div class="typing">
-    <span class="typing-dot" />
-    <span class="typing-dot" />
-    <span class="typing-dot" />
+  <div class="processing">
+    <span class="proc-dot" />
+    <span class="proc-label">处理中</span>
   </div>
 </template>
 
 <style scoped>
-.typing {
-  display: inline-flex;
-  gap: 5px;
-  padding: 14px 18px;
-  background: var(--qb-ai-bubble);
-  border: 1px solid var(--qb-ai-bubble-border);
-  border-radius: var(--qb-radius);
-  border-bottom-left-radius: 4px;
-  align-items: center;
+.processing {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 0; margin-bottom: 24px; margin-left: 52px;
+  font-size: 12px; color: var(--qb-stone);
+  border-left: 2px solid var(--qb-border); padding-left: 16px;
 }
-.typing-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: var(--qb-primary);
-  opacity: 0.3;
-  animation: dotPulse 1.4s ease-in-out infinite;
+.proc-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--qb-amber);
+  animation: pulse 1s ease-in-out infinite;
 }
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes dotPulse {
-  0%, 80%, 100% { opacity: 0.2; transform: scale(0.75); }
-  40% { opacity: 0.8; transform: scale(1); }
-}
+.proc-label { font-family: var(--qb-font-body); }
+@keyframes pulse { 0%,100%{opacity:0.3;} 50%{opacity:1;} }
 </style>

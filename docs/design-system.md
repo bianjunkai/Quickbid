@@ -1,72 +1,73 @@
-# QuickBid Design System
+# QuickBid Design System — Document Studio
 
-> AI-Native UI — Chatbot, conversational, ambient, minimal chrome
+> 策略来源：Scanner & Document Manager + Legal Services + Warm Notes Palette + Swiss Modernism
+> 核心原则：看起来像高端文档工具，不像 AI 聊天机器人
 
-## Style: AI-Native UI
+## 反 AI 设计原则
 
-Chatbot-first conversation interface. AI做一步 → 用户确认/纠正 → 继续。每条消息就是一个工作流步骤，用户通过自然对话完成标书制作。
+| AI 产品特征（避免） | QuickBid 替代方案（采用） |
+|---------------------|--------------------------|
+| 紫/粉/蓝紫渐变色 | 暖石色 + 奶油底 + 琥珀强调 |
+| 聊天气泡 (左蓝右白) | 清晰排版层级 + 左侧标签卡片 |
+| 打字机闪烁动画 | 静默的内容更新 + 小幅过渡 |
+| "AI 正在思考..." 文案 | 无文案，或"处理中" / 不强调 AI |
+| emoji 头像 / 机器人图标 | 纯文字标签 + 文件图标 |
+| 圆角过度的输入框 | 方角或小圆角功能输入区 |
+| 渐变背景 | 纯色暖奶油底 `#FFFBEB` |
 
-**Key Effects**: Typing indicators (3-dot pulse), streaming text, smooth message reveals, context cards
-**Anti-patterns**: Heavy chrome, wizard steps, slow response, spinner for >3s
+## 色彩 — 暖调文书
 
-## Layout
+| Token | Hex | Usage |
+|-------|-----|-------|
+| Paper | `#FFFBEB` | 页面底色 — 暖奶油纸 |
+| Ink | `#44403C` | 正文 — 深石色 |
+| Ink Light | `#78716C` | 次要文字 — 暖灰 |
+| Stone | `#A8A29E` | 禁用/占位 |
+| Surface | `#FFFFFF` | 卡片/面板 |
+| Border | `#E7E5E4` | 分割线 |
+| Amber | `#D97706` | 强调/CTA/激活态 |
+| Amber Light | `#FEF3C7` | 强调背景 |
+| Success | `#15803D` | 通过 |
+| Warning | `#B45309` | 警告 |
+| Danger | `#B91C1C` | 危险 |
 
-```
-┌──────────┬─────────────────────────────────────┐
-│ Sidebar  │  Chat Messages                       │
-│ 220px    │                                      │
-│          │  [AI] 你好！我是标书制作助手...        │
-│ Projects │  [User] 新建项目：xx医院HIS投标        │
-│ Materials│  [AI] ✅ 项目已创建，请上传招标文件...  │
-│          │  [User] 放好了                        │
-│          │  [AI] 📋 解析完成！K01-K14...          │
-│          │  [Quick Replies] [继续] [修改预算]     │
-│          ├──────────────────────────────────────│
-│          │  [Input_____________________] [Send]  │
-└──────────┴─────────────────────────────────────┘
-```
+## 字体 — 编辑级质感
 
-## Colors — Blue + White Messenger Style
-
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#2563EB` | AI message accent, links, send button |
-| Primary Light | `#EFF6FF` | AI message bubble background |
-| User Bubble | `#2563EB` | User message bubble (filled) |
-| User Text | `#FFFFFF` | Text on user bubble |
-| Background | `#FFFFFF` | Main chat background |
-| Sidebar | `#F8FAFC` | Sidebar background |
-| Border | `#E2E8F0` | Dividers |
-| Text Primary | `#1E293B` | Message text |
-| Text Secondary | `#64748B` | Timestamps, hints |
-| Success | `#16A34A` | Confirmation |
-| Warning | `#F59E0B` | Warnings |
-
-## Typography
-
-| Role | Font | Weight | Size |
-|------|------|--------|------|
-| Heading | Outfit | 600 | 20px |
-| Body | Work Sans | 400 | 15px |
-| Code/Data | JetBrains Mono | 400 | 13px |
+| Role | Font | Weight | Size | Notes |
+|------|------|--------|------|-------|
+| 页面大标题 | Cormorant Garamond | 600 | 28px | 编辑级衬线，权威感 |
+| 面板标题 | Cormorant Garamond | 500 | 18px | |
+| 正文 | Public Sans | 400 | 15px | 功能性无衬线，可读 |
+| 标签/提示 | Public Sans | 500 | 12px | |
+| 数据/代码 | JetBrains Mono | 400 | 13px | |
 
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Work+Sans:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Public+Sans:wght@300;400;500;600;700&display=swap');
 ```
 
-## Effects
+## 空间 — Swiss Grid
 
-- Message reveal: fadeInUp 200ms ease-out
-- Typing indicator: 3-dot pulse (scale 0→1→0, staggered)
-- Send button: subtle scale on press
-- Quick replies: chip buttons, hover bg shift 150ms
-- Streaming: typewriter effect for AI responses (Phase 6)
-- Cards in messages: 1px border, 8px radius, subtle shadow on hover
+- 基础单位: 8px
+- 卡片间距: 16px
+- 区块间距: 24px
+- 页面边距: 32px
+- 圆角: 4px (直角为主)
+- 阴影: 无或极轻 (0 1px 3px rgba(0,0,0,0.04))
 
-## Anti-Patterns
+## 组件改造
 
-- Wizard step indicators
-- Heavy navigation chrome
-- Spinners for >3s (use typing indicator instead)
-- Decorations that distract from conversation
-- Non-streaming static AI text
+### 消息 → 文档条目
+- ~~聊天气泡~~ → 左侧彩色标签 + 卡片式内容
+- AI 消息: 左侧石色细线 + 干净排版
+- 用户消息: 右侧暖灰色背景卡片
+- 无头像、无圆形气泡
+
+### 输入区 → 功能栏
+- 底部固定功能条
+- 方形输入框，小圆角
+- 发送按钮：文字 + 图标，非圆形
+
+### 侧边栏 → 项目浏览器
+- 干净文件树
+- 项目名用衬线体
+- 无多余装饰

@@ -300,81 +300,48 @@ onMounted(fetchProject)
 </script>
 
 <style scoped>
-.chat-view {
-  height: 100%;
-  background: var(--qb-paper);
-}
+.chat-view { height: 100%; background: var(--qb-paper); }
+.chat-body { display: flex; height: 100%; }
+.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
-.chat-body {
-  display: flex;
-  height: 100%;
-}
-
-.chat-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-/* Header */
 .chat-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 16px 24px; border-bottom: 1px solid var(--qb-border);
-  background: var(--qb-surface); flex-shrink: 0;
+  padding: 20px 32px 16px; background: var(--qb-paper); flex-shrink: 0;
 }
-.chat-header-left { display: flex; align-items: center; gap: 12px; }
+.chat-header-left { display: flex; align-items: baseline; gap: 12px; }
 .project-name {
-  font-family: var(--qb-font-display); font-size: 20px; font-weight: 400;
-  color: var(--qb-ink); letter-spacing: -0.01em;
+  font-family: var(--qb-font-display); font-size: 24px; font-weight: 600;
+  color: var(--qb-ink); line-height: 1.2;
 }
 .project-status {
-  font-size: 10px; padding: 3px 10px; border-radius: 20px; font-weight: 600;
-  letter-spacing: 0.5px; text-transform: uppercase;
-  color: var(--qb-ink-light); background: var(--qb-paper);
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--qb-stone);
 }
-.project-status.parsed { color: var(--qb-success); background: var(--qb-success-pale); }
-.project-status.generating { color: var(--qb-accent); background: var(--qb-accent-pale); }
-.project-status.done { color: var(--qb-primary); background: var(--qb-primary-pale); }
-
 .chat-header-right { display: flex; gap: 6px; }
 .header-action-btn {
-  width: 34px; height: 34px; border-radius: 10px;
+  width: 32px; height: 32px; border-radius: var(--qb-radius);
   border: 1px solid var(--qb-border); background: var(--qb-surface);
-  color: var(--qb-ink-light); cursor: pointer; display: flex;
-  align-items: center; justify-content: center; transition: all 150ms var(--qb-ease);
+  color: var(--qb-stone); cursor: pointer; display: flex; align-items: center;
+  justify-content: center; transition: all 120ms;
 }
 .header-action-btn:hover { background: var(--qb-paper); color: var(--qb-ink); }
 
-/* Messages */
-.chat-messages {
-  flex: 1; overflow-y: auto; padding: 28px 32px;
-  display: flex; flex-direction: column;
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(30,58,95,0.015) 0%, transparent 70%);
-}
+.chat-messages { flex: 1; overflow-y: auto; padding: 8px 32px 24px; display: flex; flex-direction: column; }
 
 .chat-empty {
-  flex: 1; display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  color: var(--qb-ink-light); opacity: 0.5; text-align: center;
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; color: var(--qb-stone); text-align: center;
 }
-.chat-empty .empty-icon { margin-bottom: 20px; opacity: 0.3; }
+.chat-empty .empty-icon { margin-bottom: 20px; opacity: 0.2; }
 .chat-empty p { margin: 4px 0; font-size: 15px; }
-.chat-empty .empty-hint { font-size: 13px; opacity: 0.6; }
+.chat-empty .empty-hint { font-size: 13px; }
 
-.typing-row { display: flex; gap: 10px; align-items: center; margin-bottom: 22px; }
-.ai-avatar-sm {
-  width: 30px; height: 30px; border-radius: 10px;
-  background: var(--qb-primary-pale); color: var(--qb-primary);
-  display: flex; align-items: center; justify-content: center;
-}
+.typing-row { margin-bottom: 24px; }
 
-/* Error */
 .chat-error {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 24px; background: var(--qb-danger-pale); color: var(--qb-danger);
-  font-size: 13px; border-top: 1px solid rgba(153,27,27,0.1);
+  padding: 10px 32px; background: #FEF2F2; color: var(--qb-danger);
+  font-size: 13px; border-top: 1px solid #FEE2E2;
 }
-.error-dismiss { background: none; border: none; color: inherit; cursor: pointer; font-size: 14px; }
+.error-dismiss { background: none; border: none; color: inherit; cursor: pointer; }
 </style>
