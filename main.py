@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -174,6 +174,39 @@ def delete_project(project_id: int):
 
 
 # ---- 招标文件解析 ----
+
+@app.post("/projects/{project_id}/upload")
+async def upload_tender(project_id: int, file: UploadFile = File(...)):
+    """上传招标文件（multipart/form-data）。
+
+    保存到 project.tender_file_path 并将 status 置回 "parsing"。
+    不自动触发解析——由用户说「放好了」后由 /parse 端点执行，
+    保持"AI 做一步 → 用户确认"的节奏。
+    """
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".pdf", ".docx"}:
+        raise HTTPException(400, f"不支持的文件类型：{suffix}（仅接受 .pdf / .docx）")
+
+    tender_path = Path(project.tender_file_path)
+    tender_path.parent.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    tender_path.write_bytes(content)
+
+    project.status = "parsing"
+    session.commit()
+
+    return {
+        "message": "上传成功，请输入「放好了」开始解析",
+        "file_path": str(tender_path),
+        "file_size": len(content),
+        "filename": file.filename,
+    }
+
 
 @app.post("/projects/{project_id}/parse")
 def parse_tender(project_id: int):

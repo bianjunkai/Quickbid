@@ -7,6 +7,10 @@
       <div class="chat-header-left">
         <span class="project-name">{{ project?.name || '加载中...' }}</span>
         <span v-if="project" class="project-status" :class="project.status">{{ statusLabel }}</span>
+        <span v-if="tenderFileName" class="tender-file-badge" :title="project?.tender_file_path">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          {{ tenderFileName }}
+        </span>
       </div>
       <div class="chat-header-right">
         <el-dropdown trigger="click">
@@ -20,6 +24,22 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+      </div>
+    </div>
+
+    <!-- Upload zone (when status=parsing and no file yet) -->
+    <div v-if="project?.status === 'parsing' && !tenderFileName" class="upload-banner">
+      <div class="upload-banner-inner">
+        <div class="upload-banner-text">
+          <strong>📎 上传招标文件</strong>
+          <p>支持 PDF / DOCX。上传完成后输入「放好了」开始解析。</p>
+        </div>
+        <el-upload
+          :show-file-list="false" :auto-upload="false" accept=".pdf,.docx"
+          :on-change="(f: any) => handleUploadTender(f.raw)"
+        >
+          <el-button type="primary" :loading="uploading">选择文件</el-button>
+        </el-upload>
       </div>
     </div>
 
@@ -72,12 +92,15 @@
         @quick-reply="handleQuickReply"
       />
       </div>
-      <!-- File panel -->
+      <!-- Right sidebar: Parser report when parsed, else File panel -->
+      <ParserResultPanel v-if="project?.status === 'parsed' && parserResult" :data="parserResult" />
       <FilePanel
+        v-else
         :project-name="project?.name"
         :tender-file="tenderFileName"
         :sub-bids="subBids"
         @add-subbid="handleAddSubBid"
+        @upload-tender="handleUploadTender"
       />
     </div>
   </div>
@@ -88,15 +111,16 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  getProject, createProject, parseTender, confirmParse,
+  getProject, createProject, parseTender, confirmParse, uploadTender,
   matchMaterials, generateTender, exportTender,
 } from '@/api'
 import ChatMessage from '@/components/ChatMessage.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import TypingIndicator from '@/components/TypingIndicator.vue'
 import FilePanel from '@/components/FilePanel.vue'
+import ParserResultPanel from '@/components/ParserResultPanel.vue'
 import type { SubBid } from '@/components/FilePanel.vue'
-import type { Project } from '@/types'
+import type { Project, ParsedData } from '@/types'
 
 interface ChatMsg {
   id: string
@@ -122,6 +146,9 @@ const errorMsg = ref('')
 const inputRef = ref<InstanceType<typeof ChatInput>>()
 const messagesEl = ref<HTMLElement>()
 const subBids = ref<SubBid[]>([])
+
+const parserResult = ref<ParsedData | null>(null)
+const uploading = ref(false)
 
 const tenderFileName = computed(() => {
   const path = project.value?.tender_file_path
@@ -234,13 +261,19 @@ const handleSend = async (text: string) => {
     if (text.includes('放好了') || text.includes('上传了') || text.includes('好了')) {
       // Parse tender
       res = await parseTender(projectId)
-      const parsed = res.data.parsed_data
-      const cards = Object.entries(parsed).map(([k, v]) => ({
-        label: String(k).replace('K0', 'K'),
-        value: Array.isArray(v) ? (v as string[]).join('、') : String(v || '—'),
-      }))
-      addMsg({ role: 'ai', content: '📋 解析完成！请确认以下信息：', time: now(), cards })
-      project.value.status = 'parsed'
+      parserResult.value = res.data.parsed_data as ParsedData
+      // 同步项目状态
+      if (project.value) project.value.status = 'parsed'
+      // 拉取最新项目数据（meta / 预算等可能已写回 DB）
+      try {
+        const fresh = await getProject(projectId)
+        project.value = fresh.data
+      } catch { /* 非关键失败，保持本地状态 */ }
+      addMsg({
+        role: 'ai',
+        content: '📋 解析完成！请在右侧查看完整报告（关键字段、标记扫描、风险条款、结构化数据）。确认无误后输入「继续」进入材料匹配。',
+        time: now(),
+      })
     } else if (text.includes('继续') || text.includes('确认') || text.includes('好的')) {
       if (status === 'parsed') {
         // Confirm parse → match
@@ -296,6 +329,32 @@ const handleAddSubBid = () => {
   inputRef.value?.focus()
 }
 
+const handleUploadTender = async (file: File) => {
+  uploading.value = true
+  try {
+    const res = await uploadTender(projectId, file)
+    // 刷新项目状态
+    const fresh = await getProject(projectId)
+    project.value = fresh.data
+    addMsg({
+      role: 'user',
+      content: `📎 已上传：${file.name}（${(file.size / 1024).toFixed(1)} KB）`,
+      time: now(),
+    })
+    addMsg({
+      role: 'ai',
+      content: res.data.message || '文件已就位。请输入「放好了」开始解析。',
+      time: now(),
+    })
+    ElMessage.success('上传成功')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '上传失败')
+  } finally {
+    uploading.value = false
+  }
+  await scrollBottom()
+}
+
 onMounted(fetchProject)
 </script>
 
@@ -317,6 +376,26 @@ onMounted(fetchProject)
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--qb-stone);
 }
+.tender-file-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--qb-amber);
+  background: var(--qb-amber-light); padding: 2px 8px; border-radius: 2px;
+  max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.upload-banner {
+  margin: 0 32px 12px;
+  padding: 14px 18px;
+  background: var(--qb-amber-light);
+  border: 1px dashed var(--qb-amber);
+  border-radius: var(--qb-radius);
+  flex-shrink: 0;
+}
+.upload-banner-inner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.upload-banner-text strong { color: var(--qb-ink); font-size: 13px; }
+.upload-banner-text p { margin: 4px 0 0; font-size: 11px; color: var(--qb-ink-light); }
 .chat-header-right { display: flex; gap: 6px; }
 .header-action-btn {
   width: 32px; height: 32px; border-radius: var(--qb-radius);

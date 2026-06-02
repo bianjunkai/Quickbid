@@ -8,11 +8,15 @@
       <div class="fp-body">
         <div class="fp-sec">
           <div class="fp-sec-title">招标文件</div>
-          <label class="fp-upload">
+          <el-upload
+            :show-file-list="false" :auto-upload="false" accept=".pdf,.docx"
+            :on-change="(f: any) => $emit('upload-tender', f.raw)"
+          >
+            <label class="fp-upload">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span>{{ tenderFile || '点击上传' }}</span>
-            <input type="file" hidden accept=".pdf,.docx" />
           </label>
+          </el-upload>
         </div>
         <div class="fp-sec">
           <div class="fp-sec-title">主标</div>
@@ -40,7 +44,7 @@
 import { ref } from 'vue'
 import FolderRow from './FileFolder.vue'
 defineProps<{ tenderFile?: string; subBids?: { id: number; companyName: string }[] }>()
-defineEmits<{ 'add-subbid': [] }>()
+defineEmits<{ 'add-subbid': []; 'upload-tender': [file: File] }>()
 const shut = ref(false)
 </script>
 

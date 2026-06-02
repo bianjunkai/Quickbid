@@ -15,6 +15,15 @@ export const getProject = (id: number) => api.get(`/projects/${id}`)
 
 export const deleteProject = (id: number) => api.delete(`/projects/${id}`)
 
+// ---- 招标文件上传 ----
+export const uploadTender = (id: number, file: File) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post(`/projects/${id}/upload`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
 // ---- 招标文件解析 ----
 export const parseTender = (id: number) => api.post(`/projects/${id}/parse`)
 

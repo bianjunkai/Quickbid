@@ -2,6 +2,8 @@
 SubBidAgent — 陪标生成
 独立生成陪标文件（与主标内容不同但事实一致），产出须经 ReviewerAgent 审查
 """
+from typing import Any
+
 from agents.base import BaseAgent, AgentContext
 
 SYSTEM_PROMPT = """你是投标文件撰写专家。生成一份独立风格的陪标文件。

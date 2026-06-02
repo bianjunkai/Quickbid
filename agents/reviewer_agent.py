@@ -2,6 +2,8 @@
 ReviewerAgent — 终审检查
 对标书初稿执行 C01-C10 10 项检查，主标和陪标都须审查
 """
+from typing import Any
+
 from agents.base import BaseAgent, AgentContext
 
 C01_C10_CHECKS = [

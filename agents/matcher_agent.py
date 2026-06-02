@@ -2,6 +2,8 @@
 MatcherAgent — 材料匹配
 将招标文件章节要求与材料库进行智能匹配
 """
+from typing import Any
+
 from agents.base import BaseAgent, AgentContext
 
 SYSTEM_PROMPT = """你是投标材料匹配专家。根据招标文件中的章节要求，从材料库中推荐最匹配的文档。

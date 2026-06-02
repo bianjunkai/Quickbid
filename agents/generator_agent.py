@@ -2,6 +2,8 @@
 GeneratorAgent — 标书初稿生成
 根据确认的材料和章节结构生成标书初稿
 """
+from typing import Any
+
 from agents.base import BaseAgent, AgentContext
 
 SYSTEM_PROMPT = """你是医疗信息化标书撰写专家。根据以下材料内容撰写专业标书章节。

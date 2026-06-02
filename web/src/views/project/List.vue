@@ -31,9 +31,7 @@
         <el-form-item label="项目名称" required>
           <el-input v-model="createForm.name" placeholder="例如：XX医院信息系统投标" @keydown.enter="handleCreate" />
         </el-form-item>
-        <el-form-item label="招标文件">
-          <el-input v-model="createForm.tender_file_name" placeholder="例如：招标书.pdf" />
-        </el-form-item>
+        <p class="form-hint">创建后请在对话页上传招标文件（PDF / DOCX）</p>
       </el-form>
       <template #footer>
         <el-button size="small" @click="showCreateDialog = false">取消</el-button>
@@ -55,7 +53,7 @@ const projects = ref<Project[]>([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const creating = ref(false)
-const createForm = ref({ name: '', tender_file_name: '' })
+const createForm = ref({ name: '', tender_file_name: 'tender.pdf' })
 
 const S: Record<string, any> = {
   parsing: { type: 'warning', text: '解析中' },
@@ -79,7 +77,7 @@ const handleCreate = async () => {
   try {
     const res = await createProject(createForm.value)
     showCreateDialog.value = false
-    createForm.value = { name: '', tender_file_name: '' }
+    createForm.value = { name: '', tender_file_name: 'tender.pdf' }
     router.push(`/projects/${res.data.project_id}`)
   } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '创建失败') }
   finally { creating.value = false }
@@ -94,4 +92,5 @@ onMounted(fetchData)
 .project-page { padding: 24px; height: 100%; overflow-y: auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .page-header h2 { margin: 0; font-family: var(--qb-font-heading); font-size: 20px; font-weight: 600; }
+.form-hint { font-size: 12px; color: var(--qb-stone); margin: 4px 0 0; }
 </style>
