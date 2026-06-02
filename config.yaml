@@ -17,12 +17,26 @@ tender_tool:
     model: deepseek-chat
     api_key_env: TENDER_DEEPSEEK_API_KEY  # 环境变量名
 
-  # 解析配置
+  # 解析配置（ParserAgent / bid_parser）
   parser:
     supported_formats:
       - pdf
       - docx
     key_info_count: 14  # K01-K14
+
+    # 解析模式：auto（根据文件大小自动选择）/ quick（1次LLM，K01-K14）/ full（~10次LLM，完整schema）/ manual（仅PDF提取+标记扫描）
+    mode: auto
+
+    # PDF 引擎：pdfplumber（推荐，中文支持好）/ pymupdf（速度快）
+    pdf_engine: pdfplumber
+
+    # 标记扫描配置
+    marker_scan:
+      enabled: true
+      extra_markers: []  # 用户自定义额外标记符号，如 ["[废标]", "[重要]"]
+
+    # LLM 批量大小（标记抽取单批最大条目数）
+    llm_batch_size: 50
 
   # 材料库分类（预定义）
   categories:
