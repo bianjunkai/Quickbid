@@ -182,6 +182,8 @@ async def upload_tender(project_id: int, file: UploadFile = File(...)):
     保存到 project.tender_file_path 并将 status 置回 "parsing"。
     不自动触发解析——由用户说「放好了」后由 /parse 端点执行，
     保持"AI 做一步 → 用户确认"的节奏。
+
+    实际保存路径会按上传文件后缀调整（避免 .pdf 后缀装 DOCX 内容的问题）。
     """
     session = get_session()
     project = session.get(Project, project_id)
@@ -192,17 +194,19 @@ async def upload_tender(project_id: int, file: UploadFile = File(...)):
     if suffix not in {".pdf", ".docx"}:
         raise HTTPException(400, f"不支持的文件类型：{suffix}（仅接受 .pdf / .docx）")
 
-    tender_path = Path(project.tender_file_path)
-    tender_path.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
-    tender_path.write_bytes(content)
-
+    # 写盘时统一按实际后缀命名（而不是沿用项目里预生成的占位 .pdf 路径）
+    base = Path(project.tender_file_path).with_suffix(suffix)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_bytes(content)
+    # 同步更新 DB 中的路径，保证后续 /parse 走正确的解析分支
+    project.tender_file_path = str(base)
     project.status = "parsing"
     session.commit()
 
     return {
         "message": "上传成功，请输入「放好了」开始解析",
-        "file_path": str(tender_path),
+        "file_path": str(base),
         "file_size": len(content),
         "filename": file.filename,
     }

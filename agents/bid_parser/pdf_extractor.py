@@ -127,16 +127,13 @@ def detect_file_type(file_path: str) -> str:
     """
     自动检测文件类型。
 
-    检测顺序：扩展名 → magic bytes
+    检测顺序：magic bytes → 扩展名
+    magic bytes 更可靠（防止扩展名被错误地写错的情况）。
 
     Returns:
         "pdf" | "docx" | "unknown"
     """
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext in SUPPORTED_EXTENSIONS:
-        return SUPPORTED_EXTENSIONS[ext]
-
-    # Magic byte 检测
+    # 优先 magic bytes（更可靠，能穿透 .pdf 后缀装 DOCX 内容的误命名）
     try:
         with open(file_path, "rb") as f:
             header = f.read(4)
@@ -146,6 +143,11 @@ def detect_file_type(file_path: str) -> str:
             return "docx"
     except Exception:
         pass
+
+    # 后备：扩展名
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in SUPPORTED_EXTENSIONS:
+        return SUPPORTED_EXTENSIONS[ext]
 
     return "unknown"
 
