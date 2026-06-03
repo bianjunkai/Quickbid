@@ -884,17 +884,26 @@ async def chat_router(project_id: int, request: Request):
     if not isinstance(messages, list):
         raise HTTPException(400, "messages 必须为数组")
     # 找最后一条 user 消息
+    # AI SDK v3: { role: "user", parts: [{ type: "text", text: "..." }] }
+    # v2 兼容: { role: "user", content: "..." } 或 content: [{ type: "text", text: "..." }]
     last_user_msg = ""
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, str):
-                last_user_msg = content
-            elif isinstance(content, list):
-                # 提取 parts 中的文本
+            # v3 优先
+            parts = m.get("parts")
+            if isinstance(parts, list) and parts:
                 last_user_msg = "".join(
-                    p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                    p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text"
                 )
+            else:
+                # v2 fallback
+                content = m.get("content", "")
+                if isinstance(content, str):
+                    last_user_msg = content
+                elif isinstance(content, list):
+                    last_user_msg = "".join(
+                        p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                    )
             break
 
     # 校验项目存在
