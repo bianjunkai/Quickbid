@@ -33,6 +33,9 @@ class Project(Base):
     open_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     parsed_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # 对话历史（UIMessage[] 序列化为 JSON）
+    messages_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -106,9 +109,15 @@ def get_engine():
     return create_engine(f"sqlite:///{DB_PATH}", echo=False)
 
 def init_db():
-    """初始化数据库"""
+    """初始化数据库 + 轻量迁移（add column if missing）"""
     engine = get_engine()
     Base.metadata.create_all(engine)
+    # 轻量迁移：messages_json 是 2026-06 之后加的，旧 DB 缺这列
+    with engine.begin() as conn:
+        from sqlalchemy import text
+        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(projects)")).fetchall()]
+        if "messages_json" not in cols:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN messages_json TEXT"))
     return engine
 
 def get_session():

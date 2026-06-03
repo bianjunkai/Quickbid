@@ -20,7 +20,13 @@ const MAIN_BID_FOLDERS = [
   "配图附件",
 ];
 
-export function FileSidebar({ project }: { project: ProjectDetail }) {
+export function FileSidebar({
+  project,
+  onOpenReport,
+}: {
+  project: ProjectDetail;
+  onOpenReport?: () => void;
+}) {
   const [shut, setShut] = useState(false);
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const subBids: { id: number; name: string }[] =
@@ -82,7 +88,9 @@ export function FileSidebar({ project }: { project: ProjectDetail }) {
             )}
 
             {/* Parsed overview */}
-            {project.parsed_data && <ParsedOverview data={project.parsed_data} />}
+            {project.parsed_data && (
+              <ParsedOverview data={project.parsed_data} onOpenReport={onOpenReport} />
+            )}
 
             {/* Main bid */}
             <div>
@@ -160,7 +168,13 @@ function FolderRow({
   );
 }
 
-function ParsedOverview({ data }: { data: any }) {
+function ParsedOverview({
+  data,
+  onOpenReport,
+}: {
+  data: any;
+  onOpenReport?: () => void;
+}) {
   const k = (key: string) => data?.[key] ?? data?.base?.[key];
   const fields = [
     { label: "项目名称", value: k("K01_project_name") || k("project_name") },
@@ -172,8 +186,17 @@ function ParsedOverview({ data }: { data: any }) {
 
   return (
     <div className="bg-paper border border-border rounded-sm p-2.5 space-y-1.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-light">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-light flex items-center justify-between">
         解析概览
+        {onOpenReport && (
+          <button
+            onClick={onOpenReport}
+            className="text-amber hover:underline normal-case tracking-normal"
+            title="在主区打开完整报告"
+          >
+            打开 →
+          </button>
+        )}
       </div>
       {fields.map((f) => (
         <div key={f.label} className="text-[11px] leading-relaxed">

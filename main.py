@@ -180,6 +180,8 @@ def get_project(project_id: int):
         "open_time": project.open_time.isoformat() if project.open_time else None,
         # 包含已解析数据（前端 ChatView 重新进入项目时恢复解析报告）
         "parsed_data": json.loads(project.parsed_data) if project.parsed_data else None,
+        # 对话历史（UIMessage[]，useChat 初始化时回填）
+        "messages": json.loads(project.messages_json) if project.messages_json else [],
     }
 
 
@@ -192,6 +194,21 @@ def delete_project(project_id: int):
     session.delete(project)
     session.commit()
     return {"message": "项目已删除"}
+
+
+@app.put("/projects/{project_id}/messages")
+def save_messages(project_id: int, payload: dict):
+    """保存对话历史（useChat.onFinish 回调）。"""
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list):
+        raise HTTPException(400, "messages 必须为数组")
+    project.messages_json = json.dumps(messages, ensure_ascii=False)
+    session.commit()
+    return {"message": "已保存", "count": len(messages)}
 
 
 # ---- 招标文件解析 ----
@@ -215,9 +232,16 @@ async def upload_tender(project_id: int, file: UploadFile = File(...)):
     if suffix not in {".pdf", ".docx"}:
         raise HTTPException(400, f"不支持的文件类型：{suffix}（仅接受 .pdf / .docx）")
 
+    # 清洗文件名：去除路径分隔符和危险字符，保留中文/英文/数字/_-
+    import re as _re
+    raw_name = Path(file.filename or "tender").name
+    safe_name = _re.sub(r"[^\w一-鿿\-.]", "_", raw_name)
+    if not safe_name or safe_name.startswith("."):
+        safe_name = f"tender{suffix}"
+
     content = await file.read()
-    # 写盘时统一按实际后缀命名（而不是沿用项目里预生成的占位 .pdf 路径）
-    base = Path(project.tender_file_path).with_suffix(suffix)
+    # 用原文件名（清洗后）覆盖占位 tender.pdf — 前端能显示实际名字
+    base = Path(project.tender_file_path).parent / safe_name
     base.parent.mkdir(parents=True, exist_ok=True)
     base.write_bytes(content)
     # 同步更新 DB 中的路径，保证后续 /parse 走正确的解析分支
@@ -229,7 +253,7 @@ async def upload_tender(project_id: int, file: UploadFile = File(...)):
         "message": "上传成功，请输入「放好了」开始解析",
         "file_path": str(base),
         "file_size": len(content),
-        "filename": file.filename,
+        "filename": safe_name,
     }
 
 

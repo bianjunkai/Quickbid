@@ -16,6 +16,7 @@ export interface ProjectDetail extends Project {
   deadline?: string;
   open_time?: string;
   parsed_data?: any;
+  messages?: UIMessageData[];
 }
 
 export interface Material {
@@ -27,6 +28,14 @@ export interface Material {
   char_count?: number;
   ai_summary?: string;
   version?: number;
+}
+
+// AI SDK UIMessage 简化类型（用于持久化往返）
+export interface UIMessageData {
+  id: string;
+  role: "user" | "assistant" | "system";
+  parts: any[];
+  metadata?: unknown;
 }
 
 class ApiError extends Error {
@@ -91,6 +100,12 @@ export const uploadTender = (id: number, file: File) => {
     return res.json();
   });
 };
+
+export const saveMessages = (id: number, messages: UIMessageData[]) =>
+  request<{ message: string; count: number }>(`/api/projects/${id}/messages`, {
+    method: "PUT",
+    body: JSON.stringify({ messages }),
+  });
 
 // ---- 材料库 ----
 export const listMaterials = (params?: { category?: string; keyword?: string }) => {
