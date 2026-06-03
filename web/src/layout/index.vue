@@ -53,29 +53,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import router from '@/router'
 import { ElMessage } from 'element-plus'
-import { listProjects, createProject } from '@/api'
-import type { Project } from '@/types'
+import { useProjectStore } from '@/store/project'
 
 const route = useRoute()
-const projects = ref<Project[]>([])
+const store = useProjectStore()
+const projects = computed(() => store.projects)
 const showNew = ref(false)
 const newName = ref('')
 const activeId = computed(() => Number(route.params.id) || null)
 
-const fetch = async () => { try { projects.value = (await listProjects()).data } catch { /* */ } }
 const create = async () => {
   if (!newName.value.trim()) return
   try {
-    const res = await createProject({ name: newName.value.trim(), tender_file_name: 'tender.pdf' })
+    const res = await store.createProject(newName.value.trim(), 'tender.pdf')
     showNew.value = false; newName.value = ''
-    router.push(`/projects/${res.data.project_id}`); fetch()
+    router.push(`/projects/${(res as any).data.project_id}`)
   } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '创建失败') }
 }
-onMounted(fetch)
+// 初始拉取 + 路由切换时刷新（确保从 List.vue 创建的项目也能出现在 sidebar）
+onMounted(() => { store.fetchProjects() })
+watch(() => route.fullPath, () => { store.fetchProjects() })
 </script>
 
 <style scoped>

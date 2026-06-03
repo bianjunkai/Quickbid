@@ -42,15 +42,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { listProjects, createProject } from '@/api'
-import type { Project } from '@/types'
+import { useProjectStore } from '@/store/project'
 
 const router = useRouter()
-const projects = ref<Project[]>([])
-const loading = ref(false)
+const store = useProjectStore()
+const projects = computed(() => store.projects)
+const loading = computed(() => store.loading)
 const showCreateDialog = ref(false)
 const creating = ref(false)
 const createForm = ref({ name: '', tender_file_name: 'tender.pdf' })
@@ -65,27 +65,21 @@ const S: Record<string, any> = {
 const statusType = (s: string) => S[s]?.type || ''
 const statusText = (s: string) => S[s]?.text || s
 
-const fetchData = async () => {
-  loading.value = true
-  try { projects.value = (await listProjects()).data } catch { /* ignore */ }
-  finally { loading.value = false }
-}
-
 const handleCreate = async () => {
   if (!createForm.value.name) { ElMessage.warning('请输入项目名称'); return }
   creating.value = true
   try {
-    const res = await createProject(createForm.value)
+    const res = await store.createProject(createForm.value.name, createForm.value.tender_file_name)
     showCreateDialog.value = false
     createForm.value = { name: '', tender_file_name: 'tender.pdf' }
-    router.push(`/projects/${res.data.project_id}`)
+    router.push(`/projects/${(res as any).data.project_id}`)
   } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '创建失败') }
   finally { creating.value = false }
 }
 
 const goDetail = (id: number) => router.push(`/projects/${id}`)
 
-onMounted(fetchData)
+onMounted(() => { store.fetchProjects() })
 </script>
 
 <style scoped>
