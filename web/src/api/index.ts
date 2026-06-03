@@ -1,8 +1,10 @@
 import axios from 'axios'
 
+// 5 分钟 — full 模式解析 ~10 次 LLM 串行调用约 1-2 分钟；generate/review
+// /export 同样需要较长时间
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 300000,
 })
 
 // ---- 项目管理 ----
