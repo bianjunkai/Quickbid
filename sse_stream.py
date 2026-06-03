@@ -12,10 +12,10 @@ Vercel AI SDK 在前端 useChat 期望一种特定的 SSE 事件格式（"AI SDK
 - tool-input-available  — 工具调用输入
 - tool-output-available — 工具调用输出
 - finish-step        — 当前步骤完成
-- finish-message     — 当前消息完成
 - finish             — 整个流结束
 - error              — 错误
 
+注：v3 协议**没有** `finish-message` 事件 — 消息边界由 `start` / `finish` 标记。
 每条事件通过 SSE 发送：`data: {json}\n\n`
 """
 import json
@@ -42,7 +42,7 @@ async def stream_text(
     """
     发送一个完整的 text 段（简化为单条 text-delta）。
 
-    协议：start → text-start → text-delta → text-end → finish-message
+    协议：start → text-start → text-delta → text-end → finish-step
     """
     message_id = message_id or _new_id("msg")
     text_id = text_id or _new_id("text")
@@ -50,7 +50,7 @@ async def stream_text(
     yield {"data": json.dumps({"type": "text-start", "id": text_id}, ensure_ascii=False)}
     yield {"data": json.dumps({"type": "text-delta", "id": text_id, "delta": text}, ensure_ascii=False)}
     yield {"data": json.dumps({"type": "text-end", "id": text_id}, ensure_ascii=False)}
-    yield {"data": json.dumps({"type": "finish-message"}, ensure_ascii=False)}
+    yield {"data": json.dumps({"type": "finish-step"}, ensure_ascii=False)}
 
 
 async def stream_tool_call(
@@ -63,7 +63,7 @@ async def stream_tool_call(
     """
     发送一个工具调用 + 输出（前端 useChat 的 tool UI 由此触发）。
 
-    协议：start → tool-input-available → tool-output-available → finish-step → finish-message
+    协议：start → tool-input-available → tool-output-available → finish-step
     """
     message_id = message_id or _new_id("msg")
     tool_call_id = tool_call_id or _new_id("call")
@@ -77,7 +77,6 @@ async def stream_tool_call(
         ensure_ascii=False,
     )}
     yield {"data": json.dumps({"type": "finish-step"}, ensure_ascii=False)}
-    yield {"data": json.dumps({"type": "finish-message"}, ensure_ascii=False)}
 
 
 async def stream_finish(message_id: Optional[str] = None) -> AsyncIterator[dict]:

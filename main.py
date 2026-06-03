@@ -659,7 +659,7 @@ def _sse_text_sync(text, message_id=None, text_id=None):
     yield {"data": json.dumps({"type": "text-start", "id": text_id}, ensure_ascii=False)}
     yield {"data": json.dumps({"type": "text-delta", "id": text_id, "delta": text}, ensure_ascii=False)}
     yield {"data": json.dumps({"type": "text-end", "id": text_id}, ensure_ascii=False)}
-    yield {"data": json.dumps({"type": "finish-message"}, ensure_ascii=False)}
+    yield {"data": json.dumps({"type": "finish-step"}, ensure_ascii=False)}
 
 
 def _sse_tool_sync(tool_name, tool_input, tool_output, message_id=None, tool_call_id=None):
@@ -676,7 +676,6 @@ def _sse_tool_sync(tool_name, tool_input, tool_output, message_id=None, tool_cal
         ensure_ascii=False,
     )}
     yield {"data": json.dumps({"type": "finish-step"}, ensure_ascii=False)}
-    yield {"data": json.dumps({"type": "finish-message"}, ensure_ascii=False)}
 
 
 def _sse_finish_sync():
