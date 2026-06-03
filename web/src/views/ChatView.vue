@@ -128,6 +128,7 @@ import { ElMessage } from 'element-plus'
 import {
   getProject, createProject, parseTender, confirmParse, uploadTender,
   matchMaterials, generateTender, exportTender,
+  parseStep1, parseStep2, parseStep3, parseStep4, parseStep5,
 } from '@/api'
 import ChatMessage from '@/components/ChatMessage.vue'
 import ChatInput from '@/components/ChatInput.vue'
@@ -136,6 +137,13 @@ import FilePanel from '@/components/FilePanel.vue'
 import ParserResultPanel from '@/components/ParserResultPanel.vue'
 import type { SubBid } from '@/components/FilePanel.vue'
 import type { Project, ParsedData } from '@/types'
+
+interface StepProgress {
+  name: string
+  status: 'idle' | 'loading' | 'done' | 'error' | 'skipped'
+  summary?: any
+  elapsed_sec?: number
+}
 
 interface ChatMsg {
   id: string
@@ -147,11 +155,12 @@ interface ChatMsg {
   cards?: { label: string; value: string }[]
   checks?: { check_id: string; check_name: string; status: string; issue?: string }[]
   chapters?: { chapter: string; material_title: string; reason: string }[]
+  steps?: StepProgress[]
 }
 
 const router = useRouter()
 const route = useRoute()
-const projectId = Number(route.params.id)
+let projectId = Number(route.params.id)
 
 const project = ref<Project | null>(null)
 const projectLoading = ref(true)
@@ -165,12 +174,29 @@ const subBids = ref<SubBid[]>([])
 const parserResult = ref<ParsedData | null>(null)
 const uploading = ref(false)
 const activeTab = ref<'chat' | 'requirements'>('chat')
+const stepProgress = ref<Array<{ status: 'idle' | 'loading' | 'done' | 'error' | 'skipped'; summary?: any }>>(
+  Array(5).fill(null).map(() => ({ status: 'idle' }))
+)
 
 // 解析完成后自动跳到「招标文件要求」tab
 watch(
   () => project.value?.status,
   (s) => { if (s === 'parsed') activeTab.value = 'requirements' }
 )
+
+// 路由切换项目时，重新加载所有数据
+watch(() => route.params.id, async (newId, oldId) => {
+  if (!newId || newId === oldId) return
+  projectId = Number(newId)
+  // 重置全部状态
+  project.value = null
+  parserResult.value = null
+  messages.value = []
+  subBids.value = []
+  stepProgress.value = Array(5).fill(null).map(() => ({ status: 'idle' }))
+  activeTab.value = 'chat'
+  await fetchProject()
+})
 
 const tenderFileName = computed(() => {
   const path = project.value?.tender_file_path
@@ -229,10 +255,105 @@ const addMsg = (msg: Omit<ChatMsg, 'id'>) => {
   messages.value.push({ ...msg, id: `m${++msgId}` })
 }
 
+const updateMsg = (id: string, patch: Partial<ChatMsg>) => {
+  const m = messages.value.find(x => x.id === id)
+  if (m) Object.assign(m, patch)
+}
+
 const scrollBottom = async () => {
   await nextTick()
   if (messagesEl.value) {
     messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+  }
+}
+
+// 5 步管道串行调用：边跑边更新聊天里的 el-steps
+async function runStepwiseParse(mode: 'auto' | 'quick' | 'full' | 'manual'): Promise<ParsedData | null> {
+  if (!project.value) return null
+  const STEP_NAMES = ['提取文本', '标记语义识别', '标记抽取', '字段抽取', '合并校验']
+  // 添加一条带 steps 的进度消息
+  const initialSteps: StepProgress[] = STEP_NAMES.map((n, i) => ({
+    name: n,
+    status: i === 0 ? 'loading' : 'idle',
+  }))
+  addMsg({
+    role: 'ai',
+    content: `🔄 开始解析（${mode} 模式）— 共 5 步：`,
+    time: now(),
+    steps: initialSteps,
+  })
+  const stepsMsgId = messages.value[messages.value.length - 1].id
+
+  const setStep = (idx: number, p: Partial<StepProgress>) => {
+    const msg = messages.value.find(m => m.id === stepsMsgId)
+    if (msg && msg.steps) {
+      msg.steps[idx] = { ...msg.steps[idx], ...p }
+    }
+    // 同步 stepProgress（parser 头部显示用）
+    stepProgress.value[idx] = { ...stepProgress.value[idx], ...p }
+    scrollBottom()
+  }
+
+  try {
+    // Step 1
+    const r1 = await parseStep1(project.value.id, mode)
+    setStep(0, { status: 'done', summary: r1.data.summary, elapsed_sec: r1.data.elapsed_sec })
+    // 启动 step 2 loading
+    setStep(1, { status: 'loading' })
+
+    // Step 2
+    const r2 = await parseStep2(project.value.id)
+    if (r2.data.status === 'skipped') {
+      setStep(1, { status: 'skipped' })
+    } else {
+      setStep(1, { status: 'done', summary: r2.data.summary, elapsed_sec: r2.data.elapsed_sec })
+    }
+    setStep(2, { status: 'loading' })
+
+    // Step 3
+    const r3 = await parseStep3(project.value.id)
+    if (r3.data.status === 'skipped') {
+      setStep(2, { status: 'skipped' })
+    } else {
+      setStep(2, { status: 'done', summary: r3.data.summary, elapsed_sec: r3.data.elapsed_sec })
+    }
+    setStep(3, { status: 'loading' })
+
+    // Step 4
+    const r4 = await parseStep4(project.value.id)
+    if (r4.data.status === 'skipped') {
+      setStep(3, { status: 'skipped' })
+    } else {
+      setStep(3, { status: 'done', summary: r4.data.summary, elapsed_sec: r4.data.elapsed_sec })
+    }
+    setStep(4, { status: 'loading' })
+
+    // Step 5
+    const r5 = await parseStep5(project.value.id)
+    setStep(4, { status: 'done', summary: r5.data.summary, elapsed_sec: r5.data.elapsed_sec })
+
+    const parsed = r5.data.parsed_data as ParsedData
+    parserResult.value = parsed
+    if (project.value) project.value.status = 'parsed'
+    // 同步 DB 中的最新 project 数据
+    try {
+      const fresh = await getProject(project.value.id)
+      project.value = { ...project.value, ...fresh.data } as any
+    } catch { /* 非关键 */ }
+
+    return parsed
+  } catch (e: any) {
+    // 找到当前 loading 的 step 标为 error
+    for (let i = 0; i < 5; i++) {
+      const s = stepProgress.value[i]
+      if (s.status === 'loading') {
+        setStep(i, { status: 'error' })
+        break
+      }
+    }
+    const detail = e?.response?.data?.detail || e?.message || '未知错误'
+    addMsg({ role: 'ai', content: `❌ 解析失败：${detail}`, time: now() })
+    return null
   }
 }
 
@@ -242,13 +363,59 @@ const fetchProject = async () => {
   projectLoading.value = true
   try {
     const res = await getProject(projectId)
-    project.value = res.data
-    // Restore conversation from project state
-    if (project.value?.name) {
-      addMsg({ role: 'ai', content: `你好！我是标书制作助手。\n\n项目「${project.value.name}」已就绪，请将招标文件（PDF/DOCX）放到指定路径后说「放好了」。`, time: now(), animate: false })
+    const p = res.data as Project
+    project.value = p
+    // 恢复已解析数据（如果是已解析状态）
+    if (p.parsed_data) {
+      parserResult.value = p.parsed_data as ParsedData
+    }
+    // 根据状态生成初始对话（不是真历史，但让用户对当前进度有概念）
+    addMsg({
+      role: 'ai',
+      content: `👋 你好！我是标书制作助手。\n\n项目「${p.name}」已加载，当前状态：${statusLabel.value || '未开始'}。`,
+      time: now(),
+      animate: false,
+    })
+    if (p.status === 'parsed' && p.parsed_data) {
+      const m = (p.parsed_data as any)._mode
+      addMsg({
+        role: 'ai',
+        content: `📋 上次解析已完成（模式：${m || '未知'}），报告已恢复。点击上方「招标文件要求」tab 查看，或直接说「继续」进入材料匹配。`,
+        time: now(),
+        animate: false,
+      })
+      activeTab.value = 'requirements'
+    } else if (p.status === 'parsing') {
+      addMsg({
+        role: 'ai',
+        content: '⏳ 当前状态为「解析中」。请将招标文件（PDF/DOCX）放到指定路径后说「放好了」开始解析。',
+        time: now(),
+        animate: false,
+      })
+    } else if (p.status === 'materials_preparing') {
+      addMsg({
+        role: 'ai',
+        content: '📚 上次已完成材料匹配。说「继续」可重新匹配或进入下一步。',
+        time: now(),
+        animate: false,
+      })
+    } else if (p.status === 'generating' || p.status === 'reviewing') {
+      addMsg({
+        role: 'ai',
+        content: '📝 上次正在生成/审查标书。说「继续」可恢复流程。',
+        time: now(),
+        animate: false,
+      })
+    } else if (p.status === 'done') {
+      addMsg({
+        role: 'ai',
+        content: '✅ 标书已完成。可说「导出Word」/「导出PDF」下载。',
+        time: now(),
+        animate: false,
+      })
     }
   } catch (e: any) {
-    ElMessage.error('加载项目失败')
+    ElMessage.error('加载项目失败：' + (e?.response?.data?.detail || e?.message || ''))
   } finally {
     projectLoading.value = false
   }
@@ -281,21 +448,15 @@ const handleSend = async (text: string) => {
     let res: any
 
     if (text.includes('放好了') || text.includes('上传了') || text.includes('好了')) {
-      // Parse tender（首次解析，不传 mode → 走后端 config 默认）
-      res = await parseTender(projectId)
-      parserResult.value = res.data.parsed_data as ParsedData
-      // 同步项目状态
-      if (project.value) project.value.status = 'parsed'
-      // 拉取最新项目数据（meta / 预算等可能已写回 DB）
-      try {
-        const fresh = await getProject(projectId)
-        project.value = fresh.data
-      } catch { /* 非关键失败，保持本地状态 */ }
-      addMsg({
-        role: 'ai',
-        content: '📋 解析完成！请在右侧查看完整报告（关键字段、标记扫描、风险条款、结构化数据）。确认无误后输入「继续」进入材料匹配。',
-        time: now(),
-      })
+      // 分步解析（5 步管道串行调用，进度实时显示在聊天里）
+      const parsed = await runStepwiseParse('full')
+      if (parsed) {
+        addMsg({
+          role: 'ai',
+          content: '📋 解析完成！请在「招标文件要求」tab 查看完整报告（关键字段、标记扫描、风险条款、结构化数据）。确认无误后输入「继续」进入材料匹配。',
+          time: now(),
+        })
+      }
     } else if (text.includes('继续') || text.includes('确认') || text.includes('好的')) {
       if (status === 'parsed') {
         // Confirm parse → match
@@ -350,20 +511,14 @@ async function onReparse(mode: 'auto' | 'quick' | 'full' | 'manual') {
   if (!project.value) return
   waiting.value = true
   try {
-    const res = await parseTender(project.value.id, mode)
-    parserResult.value = res.data.parsed_data as ParsedData
-    if (project.value) project.value.status = 'parsed'
-    addMsg({
-      role: 'ai',
-      content: `🔄 已用 ${mode} 模式重解析，报告已更新。`,
-      time: now(),
-    })
-  } catch (e: any) {
-    addMsg({
-      role: 'ai',
-      content: `❌ 重解析失败：${e?.response?.data?.detail || e?.message || '未知错误'}`,
-      time: now(),
-    })
+    const parsed = await runStepwiseParse(mode)
+    if (parsed) {
+      addMsg({
+        role: 'ai',
+        content: `🔄 已用 ${mode} 模式重解析，报告已更新。`,
+        time: now(),
+      })
+    }
   } finally {
     waiting.value = false
     await scrollBottom()
@@ -448,11 +603,11 @@ onMounted(fetchProject)
 .chat-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 24px; flex-shrink: 0; border-bottom: 1px solid var(--qb-border); }
 .chat-tabs :deep(.el-tabs__nav-wrap)::after { height: 0; }
 .chat-tabs :deep(.el-tabs__item) { font-size: 13px; font-weight: 500; height: 40px; line-height: 40px; }
-.chat-tabs :deep(.el-tabs__content) { flex: 1; padding: 0; overflow: hidden; }
-.chat-tabs :deep(.el-tab-pane) { height: 100%; }
+.chat-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; padding: 0; overflow: hidden; }
+.chat-tabs :deep(.el-tab-pane) { height: 100%; min-height: 0; }
 
-.tab-chat { height: 100%; display: flex; flex-direction: column; }
-.tab-requirements { height: 100%; overflow: hidden; }
+.tab-chat { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.tab-requirements { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .chat-header-right { display: flex; gap: 6px; }
 .header-action-btn {
   width: 32px; height: 32px; border-radius: var(--qb-radius);

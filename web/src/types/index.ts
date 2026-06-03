@@ -9,6 +9,7 @@ export interface Project {
   budget?: number
   deadline?: string
   open_time?: string
+  parsed_data?: any
 }
 
 export interface Material {

@@ -33,6 +33,18 @@
           <div v-if="ch.reason" class="ch-reason">{{ ch.reason }}</div>
         </div>
       </div>
+
+      <!-- Step progress（5 步管道进度条） -->
+      <div v-if="steps?.length" class="entry-steps">
+        <el-steps :active="stepsActive" finish-status="success" align-center size="small">
+          <el-step
+            v-for="(s, i) in steps" :key="i"
+            :title="s.name"
+            :description="stepDesc(s)"
+            :status="s.status === 'loading' ? 'process' : s.status === 'error' ? 'error' : s.status === 'skipped' ? 'wait' : (s.status === 'done' ? 'success' : 'wait')"
+          />
+        </el-steps>
+      </div>
     </div>
   </div>
 </template>
@@ -46,12 +58,39 @@ const props = withDefaults(defineProps<{
   cards?: { label: string; value: string }[]
   checks?: { check_id: string; check_name: string; status: string; issue?: string }[]
   chapters?: { chapter: string; material_title: string; reason?: string }[]
+  steps?: { name: string; status: 'idle' | 'loading' | 'done' | 'error' | 'skipped'; summary?: any; elapsed_sec?: number }[]
 }>(), { animate: true })
 
 const rendered = computed(() => {
   if (!props.content) return ''
   return props.content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>').replace(/\n/g, '<br>')
 })
+
+// el-steps 的 active 是「完成到第几步」，0 表示还没开始
+const stepsActive = computed(() => {
+  if (!props.steps) return 0
+  const done = props.steps.filter(s => s.status === 'done' || s.status === 'skipped').length
+  return done
+})
+
+function stepDesc(s: any): string {
+  if (s.status === 'skipped') return '（当前模式不需要）'
+  if (s.status === 'loading') return '进行中...'
+  if (s.status === 'error') return '失败'
+  if (s.status === 'idle') return '等待'
+  if (s.status === 'done') {
+    const sum = s.summary || {}
+    const t = s.elapsed_sec != null ? ` · ${s.elapsed_sec}s` : ''
+    // 各步骤的简短描述
+    if (s.name === '提取文本') return `${sum.text_length || 0} 字符${t}`
+    if (s.name === '标记语义识别') return `${sum.marker_types || 0} 种标记${t}`
+    if (s.name === '标记抽取') return `${sum.total || 0} 处${t}`
+    if (s.name === '字段抽取') return `${(sum.modules || []).length} 模块${t}`
+    if (s.name === '合并校验') return `${sum.validation_issues || 0} 问题${t}`
+    return t
+  }
+  return ''
+}
 </script>
 
 <style scoped>
@@ -121,6 +160,7 @@ const rendered = computed(() => {
 
 /* Chapters */
 .entry-chapters { margin-top: 10px; }
+.entry-steps { margin-top: 12px; padding: 10px 12px; background: var(--qb-surface); border: 1px solid var(--qb-border); border-radius: 2px; }
 .ch-row { padding: 8px 10px; margin-bottom: 3px; background: var(--qb-surface); border: 1px solid var(--qb-border); border-radius: 2px; }
 .ch-name { font-weight: 600; font-size: 13px; }
 .ch-mat { font-size: 12px; color: var(--qb-amber); margin-top: 2px; }

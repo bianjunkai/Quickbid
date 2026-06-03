@@ -119,7 +119,7 @@ onMounted(fetch)
 .sb-nav-item:hover { background: var(--qb-paper); }
 .sb-nav-item.active { background: var(--qb-amber-light); color: var(--qb-ink); font-weight: 500; }
 
-.main { flex:1; min-width:0; }
+.main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
 
 /* Modal */
 .modal-bg {

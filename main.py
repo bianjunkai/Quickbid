@@ -6,6 +6,7 @@
 """
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,17 @@ from pydantic import BaseModel
 
 from models import init_db, get_session, Project, Tender, Material
 from orchestrator import Orchestrator
+from agents.bid_parser.pipeline import (
+    BidLLMClient,
+    BidParsePipeline,
+    full_result_to_k01_k14,
+)
+from agents.bid_parser.pdf_extractor import get_file_info
+from agents.bid_parser.marker_scanner import (
+    extract_pages,
+    scan_markers,
+    summarize_markers,
+)
 
 # ---- 环境变量加载 ----
 # 优先从 .env 读 TENDER_DEEPSEEK_API_KEY 等敏感信息（已在 .gitignore 中）
@@ -164,6 +176,8 @@ def get_project(project_id: int):
         "budget": project.budget,
         "deadline": project.deadline.isoformat() if project.deadline else None,
         "open_time": project.open_time.isoformat() if project.open_time else None,
+        # 包含已解析数据（前端 ChatView 重新进入项目时恢复解析报告）
+        "parsed_data": json.loads(project.parsed_data) if project.parsed_data else None,
     }
 
 
@@ -250,6 +264,218 @@ def parse_tender(project_id: int, mode: Optional[str] = None):
         "message": "解析完成，请确认以下信息是否正确：",
         "parsed_data": parsed,
         "correction_hint": "如有错误，请告知我需要修改的内容"
+    }
+
+
+# ============================================================
+# 分步解析：每步独立端点，前端可串行调用以显示进度
+# ============================================================
+
+# 内存缓存：project_id → 解析中间态
+# 解析完成或项目删除时清除。重启服务会丢失（用户重新发起即可）
+_parse_state: dict[int, dict] = {}
+
+
+def _make_pipeline() -> BidParsePipeline:
+    """构造一个独立的 pipeline 实例（无状态，可随时新建）。"""
+    ai = tender_config.get("ai", {})
+    parser_cfg = tender_config.get("parser", {})
+    client = BidLLMClient(
+        model=ai.get("model", "deepseek-v4-flash"),
+        base_url=ai.get("base_url", "https://api.deepseek.com"),
+    )
+    return BidParsePipeline(client, parser_cfg)
+
+
+def _resolve_mode(project_id: int, mode: Optional[str]) -> str:
+    """解析 mode：query 参数 > config 默认。"""
+    if mode and mode in {"auto", "quick", "full", "manual"}:
+        return mode
+    return tender_config.get("parser", {}).get("mode", "auto")
+
+
+def _get_project_or_404(project_id: int) -> Project:
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    tender_path = Path(project.tender_file_path)
+    if not tender_path.exists():
+        raise HTTPException(400, f"招标文件不存在：{tender_path}")
+    return project
+
+
+def _step1_summary(text: str, info: dict) -> dict:
+    return {
+        "text_length": len(text),
+        "file_type": info.get("type"),
+        "pages": info.get("estimated_pages", 0),
+    }
+
+
+@app.post("/projects/{project_id}/parse/step1")
+def parse_step1(project_id: int, mode: Optional[str] = None):
+    """Step 1 — 文件文本提取（无 LLM，最快 ~1s）。"""
+    project = _get_project_or_404(project_id)
+    pipeline = _make_pipeline()
+    t0 = time.time()
+    text = pipeline.step1_extract_text(project.tender_file_path)
+    info = get_file_info(project.tender_file_path)
+    _parse_state[project_id] = {
+        "mode": _resolve_mode(project_id, mode),
+        "file_path": project.tender_file_path,
+        "file_info": info,
+        "full_text": text,
+        "t_start": t0,
+    }
+    return {
+        "step": 1, "name": "提取文本", "status": "done",
+        "elapsed_sec": round(time.time() - t0, 2),
+        "summary": _step1_summary(text, info),
+    }
+
+
+@app.post("/projects/{project_id}/parse/step2")
+def parse_step2(project_id: int):
+    """Step 2 — 标记语义识别（1 次 LLM，~3-5s）。"""
+    state = _parse_state.get(project_id)
+    if not state:
+        raise HTTPException(400, "请先执行 step1")
+    if state["mode"] not in ("full", "auto"):
+        # quick / manual 不需要标记语义
+        return {"step": 2, "name": "标记语义识别", "status": "skipped", "summary": {}}
+    pipeline = _make_pipeline()
+    t0 = time.time()
+    sem = pipeline.step2_detect_markers(state["full_text"])
+    state["marker_semantics"] = sem
+    markers = sem.get("detection", {}).get("markers", []) or []
+    return {
+        "step": 2, "name": "标记语义识别", "status": "done",
+        "elapsed_sec": round(time.time() - t0, 2),
+        "summary": {
+            "marker_types": len(markers),
+            "markers": [{"symbol": m.get("symbol"), "semantic": m.get("semantic_label"),
+                         "priority": m.get("priority")} for m in markers],
+        },
+    }
+
+
+@app.post("/projects/{project_id}/parse/step3")
+def parse_step3(project_id: int):
+    """Step 3 — 标记精准抽取（多次 LLM，~15-30s）。"""
+    state = _parse_state.get(project_id)
+    if not state or "marker_semantics" not in state:
+        raise HTTPException(400, "请先执行 step2")
+    if state["mode"] not in ("full", "auto"):
+        return {"step": 3, "name": "标记抽取", "status": "skipped", "summary": {}}
+    pipeline = _make_pipeline()
+    t0 = time.time()
+    extras = pipeline.step3_scan_and_extract(state["full_text"], state["marker_semantics"])
+    state["marker_extractions"] = extras
+    summary = extras.get("extraction_summary", {})
+    return {
+        "step": 3, "name": "标记抽取", "status": "done",
+        "elapsed_sec": round(time.time() - t0, 2),
+        "summary": {
+            "total": summary.get("total_marker_occurrences", 0),
+            "fatal": len(extras.get("fatal_items", [])),
+            "critical": len(extras.get("critical_items", [])),
+            "high": len(extras.get("high_items", [])),
+            "medium": len(extras.get("medium_items", [])),
+            "low": len(extras.get("low_items", [])),
+        },
+    }
+
+
+@app.post("/projects/{project_id}/parse/step4")
+def parse_step4(project_id: int):
+    """Step 4 — 字段分段抽取（10 个模块独立 LLM，~30-60s）。"""
+    state = _parse_state.get(project_id)
+    if not state or "marker_extractions" not in state:
+        raise HTTPException(400, "请先执行 step3")
+    if state["mode"] not in ("full", "auto"):
+        return {"step": 4, "name": "字段抽取", "status": "skipped", "summary": {}}
+    pipeline = _make_pipeline()
+    t0 = time.time()
+    fields = pipeline.step4_extract_fields(state["full_text"], state["marker_extractions"])
+    state["field_results"] = fields
+    return {
+        "step": 4, "name": "字段抽取", "status": "done",
+        "elapsed_sec": round(time.time() - t0, 2),
+        "summary": {
+            "modules": list(fields.keys()),
+            "filled": [k for k, v in fields.items() if v and (isinstance(v, dict) and len(v) > 0 or isinstance(v, list) and len(v) > 0)],
+        },
+    }
+
+
+@app.post("/projects/{project_id}/parse/step5")
+def parse_step5(project_id: int):
+    """Step 5 — 合并校验 + 落库。根据 mode 分支处理。
+
+    Returns:
+        包含完整 parsed_data，前端可立即填到 parserResult
+    """
+    state = _parse_state.get(project_id)
+    if not state:
+        raise HTTPException(400, "请先执行前面的步骤")
+    t0 = time.time()
+    project = _get_project_or_404(project_id)
+    mode = state["mode"]
+
+    if mode == "full" or mode == "auto":
+        # full 路径：合并 + 校验
+        if not all(k in state for k in ("marker_semantics", "marker_extractions", "field_results")):
+            raise HTTPException(400, "full 模式需要 step2-4 都完成")
+        pipeline = _make_pipeline()
+        final = pipeline.step5_merge_and_validate(
+            state["marker_semantics"], state["marker_extractions"], state["field_results"]
+        )
+        if not final.get("meta"):
+            from agents.parser_agent import ParserAgent  # lazy import 避免循环
+            final["meta"] = ParserAgent({})._build_meta(state["file_path"])
+        k01_k14 = full_result_to_k01_k14(final)
+        output = {**k01_k14, **final, "_mode": "full"}
+        elapsed_merge = time.time() - t0
+    elif mode == "quick":
+        pipeline = _make_pipeline()
+        result = pipeline.run_quick(state["file_path"])
+        output = {**result, "_mode": "quick"}
+        elapsed_merge = time.time() - t0
+    elif mode == "manual":
+        pages = extract_pages(state["full_text"])
+        hits = scan_markers(pages)
+        marker_sum = summarize_markers(hits)
+        output = {
+            "_mode": "manual",
+            "meta": {},
+            "_text_length": len(state["full_text"]),
+            "_text_preview": state["full_text"][:2000],
+            "_marker_summary": marker_sum,
+        }
+        elapsed_merge = time.time() - t0
+    else:
+        raise HTTPException(400, f"未知 mode: {mode}")
+
+    # 落库
+    session = get_session()
+    p = session.get(Project, project_id)
+    p.parsed_data = json.dumps(output, ensure_ascii=False)
+    p.status = "parsed"
+    session.commit()
+
+    # 清理缓存
+    _parse_state.pop(project_id, None)
+
+    total_elapsed = round(time.time() - state.get("t_start", t0), 2)
+    return {
+        "step": 5, "name": "合并校验", "status": "done",
+        "elapsed_sec": round(elapsed_merge, 2),
+        "total_elapsed_sec": total_elapsed,
+        "summary": {
+            "validation_issues": len((output.get("_validation") or {}).get("issues", [])),
+        },
+        "parsed_data": output,
     }
 
 

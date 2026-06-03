@@ -188,29 +188,38 @@ BID_MODULE_DESCRIPTIONS = {
 # 辅助：K01-K14 格式化函数
 # ============================================================
 
-def _format_scoring(data: dict) -> str:
-    """将 scoring 模块格式化为 K07 文本"""
-    if not data:
+def _format_scoring(data) -> str:
+    """将 scoring 模块格式化为 K07 文本。LLM 可能返回 dict 或 list。"""
+    if not data or not isinstance(data, dict):
         return "未找到"
     method = data.get("method", "")
     price_r = data.get("price_ratio", 0)
     tech_r = data.get("tech_ratio", 0)
     comm_r = data.get("commercial_ratio", 0)
     dims = data.get("dimensions", [])
-    dim_names = [d.get("name", "") for d in dims[:5]]
-    parts = [f"评标方法：{method}", f"价格{price_r}%+技术{tech_r}%+商务{comm_r}%"]
+    dim_names = [d.get("name", "") for d in dims[:5] if isinstance(d, dict)]
+    # 任意关键字段有值才视为有评分；否则未找到
+    if not (method or price_r or tech_r or comm_r or dim_names):
+        return "未找到"
+    parts = []
+    if method:
+        parts.append(f"评标方法：{method}")
+    if price_r or tech_r or comm_r:
+        parts.append(f"价格{price_r}%+技术{tech_r}%+商务{comm_r}%")
     if dim_names:
         parts.append(f"维度：{'、'.join(dim_names)}")
-    return "；".join(parts)
+    return "；".join(parts) if parts else "未找到"
 
 
-def _format_tech(data: dict) -> str:
-    """将 tech 模块格式化为 K08 文本"""
-    if not data:
+def _format_tech(data) -> str:
+    """将 tech 模块格式化为 K08 文本。LLM 可能返回 dict 或 list。"""
+    if not data or not isinstance(data, dict):
         return "未找到"
     bg = data.get("project_background", {})
     func_reqs = data.get("functional_requirements", [])
-    modules = list({r.get("module", "") for r in func_reqs if r.get("module")})
+    if not isinstance(func_reqs, list):
+        func_reqs = []
+    modules = list({r.get("module", "") for r in func_reqs if isinstance(r, dict) and r.get("module")})
     parts = []
     if isinstance(bg, dict) and bg.get("summary"):
         parts.append(bg["summary"][:100])
@@ -219,25 +228,36 @@ def _format_tech(data: dict) -> str:
     return "；".join(parts) if parts else "未找到"
 
 
-def _format_qualification(data: dict) -> str:
-    """将 qualification 模块格式化为 K09 文本"""
+def _format_qualification(data) -> str:
+    """将 qualification 模块格式化为 K09 文本。LLM 可能返回 dict 或 list。"""
     if not data:
         return "未找到"
-    reqs = data.get("requirements", [])
+    # LLM 可能直接返回 list（[{name, proof_type, ...}, ...]）
+    if isinstance(data, list):
+        reqs = data
+    elif isinstance(data, dict):
+        reqs = data.get("requirements", [])
+    else:
+        return "未找到"
     items = []
     for r in reqs[:10]:
-        name = r.get("name", "")
+        if not isinstance(r, dict):
+            items.append(str(r))
+            continue
+        name = r.get("name", "") or r.get("requirement", "") or r.get("text", "")
         ptype = r.get("proof_type", "")
-        items.append(f"{name}({ptype})" if ptype else name)
+        items.append(f"{name}({ptype})" if ptype and name else (name or "未找到"))
     return "；".join(items) if items else "未找到"
 
 
-def _format_marker_items(data: list) -> list:
-    """提取 FATAL+CRITICAL 标记文本为 K10 列表"""
-    if not data:
+def _format_marker_items(data) -> list:
+    """提取 FATAL+CRITICAL 标记文本为 K10 列表。LLM 可能返回 list 或 dict。"""
+    if not data or not isinstance(data, list):
         return []
     items = []
     for item in data:
+        if not isinstance(item, dict):
+            continue
         text = item.get("raw_text", "") or item.get("semantic", "")
         if text:
             marker = item.get("marker", "")
@@ -245,31 +265,31 @@ def _format_marker_items(data: list) -> list:
     return items[:20]
 
 
-def _format_rejection(data: list) -> list:
-    """提取废标条件为 K11 列表"""
-    if not data:
+def _format_rejection(data) -> list:
+    """提取废标条件为 K11 列表。LLM 可能返回 list 或 dict。"""
+    if not data or not isinstance(data, list):
         return []
-    return [c.get("condition", "") for c in data if c.get("condition")][:20]
+    return [c.get("condition", "") for c in data if isinstance(c, dict) and c.get("condition")][:20]
 
 
-def _format_templates(data: dict) -> str:
-    """将 templates 模块格式化为 K12 文本"""
-    if not data:
+def _format_templates(data) -> str:
+    """将 templates 模块格式化为 K12 文本。LLM 可能返回 dict 或 list。"""
+    if not data or not isinstance(data, dict):
         return "未找到"
     structure = data.get("bid_doc_structure", [])
-    if structure:
-        chapters = [f"{s.get('section_no', '')} {s.get('name', '')}" for s in structure[:10]]
+    if structure and isinstance(structure, list):
+        chapters = [f"{s.get('section_no', '')} {s.get('name', '')}" for s in structure[:10] if isinstance(s, dict)]
         return f"共{len(structure)}章：" + "、".join(chapters)
     return "未找到"
 
 
-def _format_deviation(data: dict) -> str:
-    """将 format_requirements 格式化为 K13 文本"""
-    if not data:
+def _format_deviation(data) -> str:
+    """将 format_requirements 格式化为 K13 文本。LLM 可能返回 dict 或 list。"""
+    if not data or not isinstance(data, dict):
         return "未找到"
-    copies = data.get("copies", {})
+    copies = data.get("copies", {}) or {}
     parts = []
-    if copies:
+    if copies and isinstance(copies, dict):
         parts.append(f"正本{copies.get('original', '?')}份/副本{copies.get('copy', '?')}份")
     if data.get("electronic_format"):
         parts.append(f"电子版：{data['electronic_format']}")

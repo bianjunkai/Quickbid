@@ -1,22 +1,23 @@
 <template>
-  <div class="sr">
+  <div class="sr" :class="{ 'sr--inline': inline }">
+    <!-- Inline 模式（嵌套在表格/列表单元格里）：不递归，渲染为摘要文本 -->
+    <span v-if="inline" class="sr-inline">{{ summarizeInline(value) }}</span>
+
     <!-- 数组 -->
-    <template v-if="isArray">
+    <template v-else-if="isArray">
       <el-table v-if="allObjects" :data="value" size="small" stripe>
         <el-table-column
           v-for="col in arrayColumns" :key="col" :prop="col" :label="col"
           :min-width="80"
         >
           <template #default="{ row }">
-            <span v-if="isScalar(row[col])">{{ formatScalar(row[col]) }}</span>
-            <span v-else class="sr-obj">{{ summarize(row[col]) }}</span>
+            <SchemaRenderer :value="row[col]" :inline="true" />
           </template>
         </el-table-column>
       </el-table>
       <ul v-else class="sr-list">
         <li v-for="(item, i) in value" :key="i">
-          <span v-if="isScalar(item)">{{ formatScalar(item) }}</span>
-          <span v-else class="sr-obj">{{ summarize(item) }}</span>
+          <SchemaRenderer :value="item" :inline="true" />
         </li>
       </ul>
     </template>
@@ -36,7 +37,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const props = defineProps<{ value: any }>()
+const props = withDefaults(defineProps<{ value: any; inline?: boolean }>(), { inline: false })
 
 const isArray = computed(() => Array.isArray(props.value))
 const isObject = computed(() => props.value !== null && typeof props.value === 'object' && !Array.isArray(props.value))
@@ -69,12 +70,32 @@ function formatScalar(v: any): string {
   return String(v)
 }
 
-function summarize(v: any): string {
+/**
+ * Inline 模式：用于嵌套在表格/列表单元格里。
+ * - 标量 → 直接显示
+ * - 小对象（≤4 个标量字段）→ 渲染为 "k1=v1, k2=v2" 列表
+ * - 小数组（≤3 项）→ 渲染为 "a, b, c" 列表
+ * - 大对象/数组 → 摘要 "{N 字段} / [N 项]"
+ */
+function summarizeInline(v: any): string {
   if (v === null || v === undefined) return '—'
-  if (Array.isArray(v)) return `[${v.length} 项]`
+  if (isScalar(v)) return formatScalar(v)
+
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]'
+    if (v.length <= 3 && v.every(isScalar)) {
+      return v.map(formatScalar).join('、')
+    }
+    return `[${v.length} 项]`
+  }
+
   if (typeof v === 'object') {
-    const keys = Object.keys(v)
-    return `{${keys.length} 字段}`
+    const entries = Object.entries(v)
+    if (entries.length === 0) return '{}'
+    if (entries.length <= 4 && entries.every(([_, val]) => isScalar(val))) {
+      return entries.map(([k, val]) => `${k}: ${formatScalar(val)}`).join('；')
+    }
+    return `{${entries.length} 字段}`
   }
   return formatScalar(v)
 }
@@ -82,7 +103,7 @@ function summarize(v: any): string {
 
 <style scoped>
 .sr-scalar { color: var(--qb-ink); font-size: 13px; }
-.sr-obj { font-family: var(--qb-font-mono); font-size: 11px; color: var(--qb-stone); }
+.sr-inline { color: var(--qb-ink); font-size: 12px; line-height: 1.5; word-break: break-word; }
 .sr-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--qb-ink); }
 .sr-list li { margin: 2px 0; }
 </style>

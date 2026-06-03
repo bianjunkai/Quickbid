@@ -30,6 +30,14 @@ export const uploadTender = (id: number, file: File) => {
 export const parseTender = (id: number, mode?: 'auto' | 'quick' | 'full' | 'manual') =>
   api.post(`/projects/${id}/parse`, null, { params: mode ? { mode } : {} })
 
+// ---- 分步解析（前端串行调用显示进度）----
+export const parseStep1 = (id: number, mode?: string) =>
+  api.post(`/projects/${id}/parse/step1`, null, { params: mode ? { mode } : {} })
+export const parseStep2 = (id: number) => api.post(`/projects/${id}/parse/step2`)
+export const parseStep3 = (id: number) => api.post(`/projects/${id}/parse/step3`)
+export const parseStep4 = (id: number) => api.post(`/projects/${id}/parse/step4`)
+export const parseStep5 = (id: number) => api.post(`/projects/${id}/parse/step5`)
+
 export const confirmParse = (id: number, corrections?: Record<string, any>) =>
   api.post(`/projects/${id}/parse/confirm`, { corrections })
 

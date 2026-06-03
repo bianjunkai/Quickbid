@@ -400,6 +400,7 @@ function formatTime(s: string) {
   border-left: 1px solid var(--qb-border);
   width: 360px;
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -443,8 +444,8 @@ function formatTime(s: string) {
   margin-left: 6px; color: var(--qb-accent, #8a5a2b); font-weight: 500;
 }
 
-.prp-tabs { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-.prp-tabs :deep(.el-tabs__content) { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.prp-tabs { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.prp-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
 .prp-tabs :deep(.el-tab-pane) { height: 100%; }
 
 .prp-desc { margin-top: 4px; }
