@@ -267,7 +267,11 @@ class ParserAgent(BaseAgent):
     def _get_pipeline(self) -> BidParsePipeline:
         """懒初始化管道。"""
         if self._pipeline is None:
-            self._llm_client = BidLLMClient()
+            ai_config = self.config.get("ai", {})
+            self._llm_client = BidLLMClient(
+                model=ai_config.get("model", "deepseek-v4-flash"),
+                base_url=ai_config.get("base_url", "https://api.deepseek.com"),
+            )
             parser_config = self.config.get("parser", {})
             self._pipeline = BidParsePipeline(self._llm_client, parser_config)
         return self._pipeline

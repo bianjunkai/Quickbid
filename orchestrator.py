@@ -52,9 +52,9 @@ class Orchestrator:
         self.ctx = AgentContext()
         self.step: WorkflowStep = WorkflowStep.IDLE
 
-        # 初始化 Agent
+        # 初始化 Agent（parser 需要 tender_tool.ai.* 段，所以单独传 config）
         self.agents = {
-            "parser": ParserAgent(),
+            "parser": ParserAgent(self.config),
             "matcher": MatcherAgent(),
             "generator": GeneratorAgent(),
             "reviewer": ReviewerAgent(),

@@ -14,8 +14,9 @@ tender_tool:
   # AI 配置
   ai:
     provider: deepseek  # 目前只支持 deepseek
-    model: deepseek-chat
-    api_key_env: TENDER_DEEPSEEK_API_KEY  # 环境变量名
+    model: deepseek-v4-flash  # V4 主推（deepseek-chat 将在 2026/07/24 弃用）
+    base_url: https://api.deepseek.com  # 可改为代理/中转地址
+    api_key_env: TENDER_DEEPSEEK_API_KEY  # 环境变量名（写入 .env，已被 .gitignore 排除）
 
   # 解析配置（ParserAgent / bid_parser）
   parser:

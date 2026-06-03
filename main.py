@@ -11,12 +11,17 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import init_db, get_session, Project, Tender, Material
 from orchestrator import Orchestrator
+
+# ---- 环境变量加载 ----
+# 优先从 .env 读 TENDER_DEEPSEEK_API_KEY 等敏感信息（已在 .gitignore 中）
+load_dotenv()
 
 # ---- 配置加载 ----
 _CONFIG_DIR = Path(__file__).parent
