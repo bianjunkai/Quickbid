@@ -337,125 +337,101 @@ def parse_step1(project_id: int, mode: Optional[str] = None):
 
 @app.post("/projects/{project_id}/parse/step2")
 def parse_step2(project_id: int):
-    """Step 2 — 标记语义识别（1 次 LLM，~3-5s）。"""
+    """Step 2 — 单次 LLM 全量解析（1M 上下文，~20-40s）。
+
+    替代旧的 step2_detect_markers + step3_scan_and_extract + step4_extract_fields 三步。
+    1 次 LLM 调用同时输出 K01-K14 + 8 模块 + 标记抽取。
+    """
     state = _parse_state.get(project_id)
     if not state:
         raise HTTPException(400, "请先执行 step1")
-    if state["mode"] not in ("full", "auto"):
-        # quick / manual 不需要标记语义
-        return {"step": 2, "name": "标记语义识别", "status": "skipped", "summary": {}}
+    if state["mode"] in ("quick", "manual"):
+        return {"step": 2, "name": "LLM 解析", "status": "skipped", "summary": {}}
     pipeline = _make_pipeline()
     t0 = time.time()
-    sem = pipeline.step2_detect_markers(state["full_text"])
-    state["marker_semantics"] = sem
-    markers = sem.get("detection", {}).get("markers", []) or []
+    parsed = pipeline.step2_full_parse(state["full_text"])
+    state["parsed"] = parsed
+
+    if parsed.get("_mode") in ("manual", "error"):
+        return {
+            "step": 2, "name": "LLM 解析", "status": parsed["_mode"],
+            "elapsed_sec": round(time.time() - t0, 2),
+            "summary": {"_error": parsed.get("_error", "")},
+        }
+
+    k_filled = sum(1 for k in parsed if k.startswith("K") and parsed[k] and parsed[k] != "未找到")
+    modules = ["base", "qualification", "rejection", "scoring", "tech", "commercial", "templates", "logistics"]
+    modules_filled = [m for m in modules if parsed.get(m)]
+    marker_fatal = len(parsed.get("marker_extractions", {}).get("fatal_items", []))
+    marker_total = parsed.get("marker_extractions", {}).get("extraction_summary", {}).get("total_marker_occurrences", 0)
+
     return {
-        "step": 2, "name": "标记语义识别", "status": "done",
+        "step": 2, "name": "LLM 解析", "status": "done",
         "elapsed_sec": round(time.time() - t0, 2),
         "summary": {
-            "marker_types": len(markers),
-            "markers": [{"symbol": m.get("symbol"), "semantic": m.get("semantic_label"),
-                         "priority": m.get("priority")} for m in markers],
+            "k_filled": k_filled,
+            "modules": modules,
+            "modules_filled": modules_filled,
+            "marker_fatal": marker_fatal,
+            "marker_total": marker_total,
         },
     }
 
 
 @app.post("/projects/{project_id}/parse/step3")
 def parse_step3(project_id: int):
-    """Step 3 — 标记精准抽取（多次 LLM，~15-30s）。"""
-    state = _parse_state.get(project_id)
-    if not state or "marker_semantics" not in state:
-        raise HTTPException(400, "请先执行 step2")
-    if state["mode"] not in ("full", "auto"):
-        return {"step": 3, "name": "标记抽取", "status": "skipped", "summary": {}}
-    pipeline = _make_pipeline()
-    t0 = time.time()
-    extras = pipeline.step3_scan_and_extract(state["full_text"], state["marker_semantics"])
-    state["marker_extractions"] = extras
-    summary = extras.get("extraction_summary", {})
-    return {
-        "step": 3, "name": "标记抽取", "status": "done",
-        "elapsed_sec": round(time.time() - t0, 2),
-        "summary": {
-            "total": summary.get("total_marker_occurrences", 0),
-            "fatal": len(extras.get("fatal_items", [])),
-            "critical": len(extras.get("critical_items", [])),
-            "high": len(extras.get("high_items", [])),
-            "medium": len(extras.get("medium_items", [])),
-            "low": len(extras.get("low_items", [])),
-        },
-    }
+    """Step 3 — 本地校验合并 + 落库。
 
-
-@app.post("/projects/{project_id}/parse/step4")
-def parse_step4(project_id: int):
-    """Step 4 — 字段分段抽取（10 个模块独立 LLM，~30-60s）。"""
-    state = _parse_state.get(project_id)
-    if not state or "marker_extractions" not in state:
-        raise HTTPException(400, "请先执行 step3")
-    if state["mode"] not in ("full", "auto"):
-        return {"step": 4, "name": "字段抽取", "status": "skipped", "summary": {}}
-    pipeline = _make_pipeline()
-    t0 = time.time()
-    fields = pipeline.step4_extract_fields(state["full_text"], state["marker_extractions"])
-    state["field_results"] = fields
-    return {
-        "step": 4, "name": "字段抽取", "status": "done",
-        "elapsed_sec": round(time.time() - t0, 2),
-        "summary": {
-            "modules": list(fields.keys()),
-            "filled": [k for k, v in fields.items() if v and (isinstance(v, dict) and len(v) > 0 or isinstance(v, list) and len(v) > 0)],
-        },
-    }
-
-
-@app.post("/projects/{project_id}/parse/step5")
-def parse_step5(project_id: int):
-    """Step 5 — 合并校验 + 落库。根据 mode 分支处理。
-
-    Returns:
-        包含完整 parsed_data，前端可立即填到 parserResult
+    接收 step2 的 LLM 输出，做本地校验（模块完整性、必填字段），
+    落库到 Project.parsed_data，更新 status='parsed'。
     """
     state = _parse_state.get(project_id)
     if not state:
-        raise HTTPException(400, "请先执行前面的步骤")
+        raise HTTPException(400, "请先执行 step1")
     t0 = time.time()
     project = _get_project_or_404(project_id)
     mode = state["mode"]
 
-    if mode == "full" or mode == "auto":
-        # full 路径：合并 + 校验
-        if not all(k in state for k in ("marker_semantics", "marker_extractions", "field_results")):
-            raise HTTPException(400, "full 模式需要 step2-4 都完成")
-        pipeline = _make_pipeline()
-        final = pipeline.step5_merge_and_validate(
-            state["marker_semantics"], state["marker_extractions"], state["field_results"]
+    if mode == "manual":
+        # 无 LLM 可用：只跑文本提取 + 标记扫描
+        from agents.bid_parser.marker_scanner import (
+            extract_pages as _extract_pages,
+            scan_markers as _scan_markers,
+            summarize_markers as _summarize_markers,
         )
-        if not final.get("meta"):
-            from agents.parser_agent import ParserAgent  # lazy import 避免循环
-            final["meta"] = ParserAgent({})._build_meta(state["file_path"])
-        k01_k14 = full_result_to_k01_k14(final)
-        output = {**k01_k14, **final, "_mode": "full"}
-        elapsed_merge = time.time() - t0
-    elif mode == "quick":
-        pipeline = _make_pipeline()
-        result = pipeline.run_quick(state["file_path"])
-        output = {**result, "_mode": "quick"}
-        elapsed_merge = time.time() - t0
-    elif mode == "manual":
-        pages = extract_pages(state["full_text"])
-        hits = scan_markers(pages)
-        marker_sum = summarize_markers(hits)
+        pages = _extract_pages(state["full_text"])
+        hits = _scan_markers(pages)
+        marker_sum = _summarize_markers(hits)
         output = {
             "_mode": "manual",
-            "meta": {},
+            "meta": {"text_length": len(state["full_text"])},
             "_text_length": len(state["full_text"]),
             "_text_preview": state["full_text"][:2000],
             "_marker_summary": marker_sum,
         }
-        elapsed_merge = time.time() - t0
+    elif mode == "quick":
+        pipeline = _make_pipeline()
+        result = pipeline.run_quick(state["file_path"])
+        output = {**result, "_mode": "quick", "_text_length": len(state["full_text"])}
     else:
-        raise HTTPException(400, f"未知 mode: {mode}")
+        # full / auto：合并 step2 输出 + 本地校验
+        if "parsed" not in state:
+            raise HTTPException(400, "full 模式需要 step2 完成")
+        parsed = state["parsed"]
+        if parsed.get("_mode") in ("manual", "error"):
+            output = {**parsed, "_text_length": len(state["full_text"])}
+        else:
+            pipeline = _make_pipeline()
+            final = pipeline.step3_validate(parsed, state["full_text"])
+            # K-层提取（LLM 已给，fallback 用 formatters）
+            from agents.parser_agent import ParserAgent
+            k01_k14 = ParserAgent({})._extract_k01_k14(final)
+            output = {
+                **k01_k14,
+                **{k: v for k, v in final.items() if k not in k01_k14},
+                "_mode": "full",
+                "_text_length": len(state["full_text"]),
+            }
 
     # 落库
     session = get_session()
@@ -469,8 +445,8 @@ def parse_step5(project_id: int):
 
     total_elapsed = round(time.time() - state.get("t_start", t0), 2)
     return {
-        "step": 5, "name": "合并校验", "status": "done",
-        "elapsed_sec": round(elapsed_merge, 2),
+        "step": 3, "name": "校验合并", "status": "done",
+        "elapsed_sec": round(time.time() - t0, 2),
         "total_elapsed_sec": total_elapsed,
         "summary": {
             "validation_issues": len((output.get("_validation") or {}).get("issues", [])),

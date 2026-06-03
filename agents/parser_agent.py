@@ -28,6 +28,7 @@ from agents.bid_parser.pipeline import (
     BidLLMClient,
     full_result_to_k01_k14,
 )
+from agents.bid_parser.schema import K01_K14_MAPPING
 from agents.bid_parser.pdf_extractor import extract_file_text, get_file_info
 from agents.bid_parser.marker_scanner import extract_pages, scan_markers, summarize_markers
 
@@ -154,9 +155,9 @@ class ParserAgent(BaseAgent):
 
     def execute_full(self, ctx: AgentContext, file_path: str | None = None) -> dict:
         """
-        完整模式：执行五步管道，输出全 schema。
+        完整模式（阶段 1）：单次 1M 上下文 LLM 解析，输出 K01-K14 + 8 模块 + 标记。
 
-        约 10 次 LLM 调用。耗时较长但覆盖面最全。
+        1 次 LLM 调用替代旧的 ~10 次。耗时从 3-4 分钟降到 20-40 秒。
         支持 PDF 和 DOCX。
         """
         if file_path is None:
@@ -167,21 +168,24 @@ class ParserAgent(BaseAgent):
 
         pipeline = self._get_pipeline()
 
-        # 运行完整五步管道
+        # 运行新 3 步管道（阶段 1）
         full_result = pipeline.run(file_path)
 
-        # 填充 meta
+        # 填充 meta（如果 LLM 没给）
         if not full_result.get("meta"):
             full_result["meta"] = self._build_meta(file_path)
+        full_result["meta"].setdefault("parser_version", "3.1.0-full-context")
+        full_result["meta"].setdefault("prompt_mode", "single-shot-1M-context")
 
-        # 转换为 K01-K14 兼容格式
-        k01_k14 = full_result_to_k01_k14(full_result)
+        # 提取 K-层：新管道下 LLM 已直接给 K01-K14；只在缺失时用 formatter 从模块补
+        k01_k14 = self._extract_k01_k14(full_result)
 
-        # 合并输出
+        # 合并输出（模块 + K-层 + meta）
         output = {
             **k01_k14,
-            **full_result,
-            "_mode": "full",
+            **{k: v for k, v in full_result.items() if k not in k01_k14},
+            "_mode": full_result.get("_mode", "full"),
+            "_text_length": full_result.get("meta", {}).get("text_length", 0),
         }
 
         ctx.parsed_data = output
@@ -278,6 +282,21 @@ class ParserAgent(BaseAgent):
             parser_config = self.config.get("parser", {})
             self._pipeline = BidParsePipeline(self._llm_client, parser_config)
         return self._pipeline
+
+    def _extract_k01_k14(self, full_result: dict) -> dict:
+        """
+        提取 K01-K14：优先用 LLM 直接给的 K-层（阶段 1 新管道）。
+        LLM 已经在 FULL_PARSE_SYSTEM prompt 下输出 K01_项目名称/K04_预算金额 等字段。
+        """
+        k = {}
+        for i in range(1, 15):
+            key = f"K{i:02d}"
+            # 找 K-层字段（key 形如 K01_项目名称 / K10_星标项 / K14_演示要求）
+            for fk in full_result:
+                if fk.startswith(f"{key}_") and full_result[fk] not in (None, "", []):
+                    k[fk] = full_result[fk]
+                    break
+        return k
 
     def _resolve_file_path(self, ctx: AgentContext) -> Optional[str]:
         """

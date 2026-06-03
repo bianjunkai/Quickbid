@@ -48,6 +48,7 @@ from agents.bid_parser.prompts import (
     extraction_messages,
     validation_messages,
     quick_extraction_messages,
+    full_parse_messages,
 )
 
 
@@ -212,6 +213,70 @@ class BidParsePipeline:
             带位置标记的完整文本
         """
         return extract_file_text(file_path, engine=self.pdf_engine)
+
+    # ============================================================
+    # Step 2: 单次全量 LLM 解析（阶段 1：替代旧的 step2-4）
+    # ============================================================
+
+    def step2_full_parse(self, full_text: str) -> dict:
+        """
+        单次 LLM 调用解析全文，输出 14 K + 8 模块 + 标记抽取的完整 JSON。
+
+        依赖：DeepSeek V3.1+ / V4 1M 上下文。
+        79 页 PDF ≈ 25K tokens 输入，1 次调用同时拿到：
+          - K01-K14 用户友好层（字符串/数组）
+          - 8 个结构化模块
+          - marker_extractions 5 个优先级数组
+        """
+        if not self.llm.is_available:
+            return {
+                "_error": "LLM 不可用，请配置 TENDER_DEEPSEEK_API_KEY",
+                "_mode": "manual",
+            }
+
+        messages = full_parse_messages(full_text)
+        # 16K 输出足够装下 14 K + 8 模块 + 67 标记条目
+        result = self.llm.chat_json(messages, temperature=0.0, max_tokens=16384)
+
+        if not result:
+            # 一次失败重试一次（用稍高温度避免相同截断）
+            result = self.llm.chat_json(messages, temperature=0.1, max_tokens=16384)
+
+        if not result:
+            return {
+                "_error": "LLM 解析失败（连续 2 次调用均无响应）",
+                "_mode": "error",
+            }
+
+        # 注入 meta 信息
+        result.setdefault("meta", {})
+        result["meta"]["parser_version"] = "3.1.0-full-context"
+        result["meta"]["text_length"] = len(full_text)
+        result["meta"]["prompt_mode"] = "single-shot-1M-context"
+
+        return result
+
+    # ============================================================
+    # Step 3: 本地校验与合并（无 LLM）
+    # ============================================================
+
+    def step3_validate(self, parsed: dict, full_text: str) -> dict:
+        """
+        本地校验：模块完整性 + K-层/模块-层一致性 + 必填字段。
+
+        Returns:
+            在 parsed 基础上添加 _validation 和补全的最终 dict
+        """
+        final = dict(parsed)  # 浅拷贝
+        local_issues = self._local_validation(final)
+        # 文本长度（即使 LLM 没填也保证前端能拿到）
+        final.setdefault("meta", {})
+        final["meta"].setdefault("text_length", len(full_text))
+        final["_validation"] = {
+            "method": "local",
+            "issues": local_issues,
+        }
+        return final
 
     # ================================================================
     # Step 2: 标记语义识别
@@ -494,31 +559,29 @@ class BidParsePipeline:
 
     def run(self, file_path: str) -> dict:
         """
-        执行完整五步管道。
+        执行新 3 步管道（阶段 1）：
 
-        Args:
-            file_path: 招标文件路径（PDF 或 DOCX）
+          Step 1: 文件文本提取（本地）
+          Step 2: 单次 LLM 全量解析（1M 上下文，1 次调用）
+          Step 3: 本地校验与合并
 
-        Returns:
-            完整结构化解析结果 dict
+        旧的 5 步管道方法（step2_detect_markers / step3_scan_and_extract /
+        step4_extract_fields / step5_merge_and_validate）保留供向后兼容，
+        但不再被 run() 调用。
         """
         # Step 1: 文件文本提取
         full_text = self.step1_extract_text(file_path)
 
-        # Step 2: 标记语义识别
-        marker_semantics = self.step2_detect_markers(full_text)
+        # Step 2: 单次 LLM 解析
+        parsed = self.step2_full_parse(full_text)
+        if parsed.get("_mode") in ("manual", "error"):
+            # LLM 不可用或调用失败，保留错误信息直接返回（前端会展示）
+            parsed.setdefault("meta", {})
+            parsed["meta"]["text_length"] = len(full_text)
+            return parsed
 
-        # Step 3: 标记精准抽取
-        marker_extractions = self.step3_scan_and_extract(full_text, marker_semantics)
-
-        # Step 4: 字段分段抽取
-        field_results = self.step4_extract_fields(full_text, marker_extractions)
-
-        # Step 5: 合并与校验
-        final = self.step5_merge_and_validate(
-            marker_semantics, marker_extractions, field_results
-        )
-
+        # Step 3: 本地校验
+        final = self.step3_validate(parsed, full_text)
         return final
 
     def run_quick(self, file_path: str) -> dict:

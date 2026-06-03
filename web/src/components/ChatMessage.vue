@@ -81,12 +81,14 @@ function stepDesc(s: any): string {
   if (s.status === 'done') {
     const sum = s.summary || {}
     const t = s.elapsed_sec != null ? ` · ${s.elapsed_sec}s` : ''
-    // 各步骤的简短描述
+    // 阶段 1：3 步管道（提取文本 / LLM 解析 / 校验合并）
     if (s.name === '提取文本') return `${sum.text_length || 0} 字符${t}`
-    if (s.name === '标记语义识别') return `${sum.marker_types || 0} 种标记${t}`
-    if (s.name === '标记抽取') return `${sum.total || 0} 处${t}`
-    if (s.name === '字段抽取') return `${(sum.modules || []).length} 模块${t}`
-    if (s.name === '合并校验') return `${sum.validation_issues || 0} 问题${t}`
+    if (s.name === 'LLM 解析') {
+      const k = sum.k_filled ?? 0
+      const m = (sum.modules_filled || []).length
+      return `K ${k}/14 · 模块 ${m}/8${t}`
+    }
+    if (s.name === '校验合并') return `${sum.validation_issues || 0} 问题${t}`
     return t
   }
   return ''

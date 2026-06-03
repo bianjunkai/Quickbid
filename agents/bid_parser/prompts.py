@@ -318,5 +318,213 @@ def system_prompt_for_step(step: str) -> str:
         "marker_extraction": MARKER_EXTRACTION_SYSTEM,
         "validation": VALIDATION_SYSTEM,
         "quick": QUICK_EXTRACTION_SYSTEM,
+        "full_parse": FULL_PARSE_SYSTEM,
     }
     return prompts.get(step, ROLE_EXPERT)
+
+
+# ============================================================
+# 阶段 1：单次全量解析（1M 上下文单调用）— 替代旧的五步管道
+# ============================================================
+
+FULL_PARSE_SYSTEM = """你是招标文件解析专家。给定完整招标文件文本，一次性提取所有结构化信息。
+
+## 输出 JSON Schema
+
+{
+  // ── K01-K14 用户友好层（精炼字符串/数组，给 UI 展示用）──
+  "K01_项目名称": "string, 项目全称，未找到填'未找到'",
+  "K02_招标编号": "string, 招标/项目编号",
+  "K03_招标人": "string, 招标人/采购人名称",
+  "K04_预算金额": "string, 含单位如'165万元'，未找到填'未找到'",
+  "K05_投标截止时间": "string, ISO 8601 或原文表述",
+  "K06_开标时间": "string, ISO 8601 或原文表述",
+  "K07_评分标准": "string, 简述评标方法与权重（例：综合评分法 价格30% 技术50% 商务20%）",
+  "K08_技术要求": "string, 简述主要技术需求（模块/性能/集成）",
+  "K09_商务资质要求": "string, 列出关键资质/业绩/人员/财务要求",
+  "K10_星标项": ["string", ...],  // 带★/▲等关键标记的条款，逐条列出
+  "K11_废标条款": ["string", ...],  // 所有可能导致废标的条款，逐条列出
+  "K12_章节模板要求": "string, 投标文件应包含的章节清单",
+  "K13_偏离表格式要求": "string, 描述正本/副本/电子版/装订要求",
+  "K14_演示要求": "string, 是否需要演示、时长、形式",
+
+  // ── 8 个结构化模块（机器可读，下游 Agent 使用）──
+  "base": {
+    "project_name": "string",
+    "project_no": "string",
+    "bid_opening": {
+      "deadline": "string, 投标截止时间 ISO 8601",
+      "open_time": "string, 开标时间 ISO 8601"
+    },
+    "budget": {
+      "amount": <number, 单位元, 例 1650000>,
+      "currency": "CNY"
+    },
+    "bid_security": <number, 投标保证金金额, 单位元>,
+    "bid_validity_days": <number, 投标有效期天数>,
+    "bid_doc_mode": "string, 单轨制/双轨制/电子招投标"
+  },
+
+  "qualification": {
+    "requirements": [
+      {
+        "id": "Q01",
+        "name": "string, 资质/业绩/人员/财务/信用条款名",
+        "type": "公司资质|业绩案例|人员要求|财务要求|信用要求|其他",
+        "proof_type": "string, 证明方式（证书/合同/报表/承诺函等）",
+        "is_mandatory": <bool>
+      }
+    ]
+  },
+
+  "rejection": {
+    "conditions": [
+      {
+        "id": "R01",
+        "type": "废标|否决|无效投标|资格不符",
+        "condition": "string, 完整描述",
+        "severity": "FATAL|HIGH|MEDIUM",
+        "source_marker": "string, 触发该条款的原文标记符号如★/▲，无则为空"
+      }
+    ],
+    "sign_stamp_requirements": "string, 签章/盖章/签字要求"
+  },
+
+  "scoring": {
+    "method": "string, 综合评分法|最低评标价法|性价比法|其他",
+    "price_ratio": <number 0-100, 价格权重>,
+    "tech_ratio": <number 0-100, 技术权重>,
+    "commercial_ratio": <number 0-100, 商务权重>,
+    "dimensions": [
+      {
+        "name": "string, 评分维度如'技术方案'",
+        "max_score": <number, 该维度最高分>,
+        "sub_items": [
+          {"name": "string, 子项名", "score": <number, 最高分>, "criteria": "string, 评分标准"}
+        ]
+      }
+    ],
+    "bonus_items": [
+      {"name": "string, 加分项名", "max_score": <number, 最高加分>}
+    ]
+  },
+
+  "tech": {
+    "project_background": {
+      "summary": "string, 项目背景简述"
+    },
+    "functional_requirements": [
+      {
+        "module": "string, 所属系统模块如'用户管理'",
+        "name": "string, 需求名",
+        "description": "string, 详细描述",
+        "priority": "FATAL|HIGH|MEDIUM|LOW"
+      }
+    ],
+    "non_functional_requirements": {
+      "performance": "string, 性能要求（并发/TPS/响应时间）",
+      "availability": "string, 可用性要求",
+      "scalability": "string, 扩展性要求"
+    },
+    "security_requirements": {
+      "level": "string, 等保级别",
+      "items": ["string, 安全要求条目"]
+    },
+    "deliverables": ["string, 交付物清单"]
+  },
+
+  "commercial": {
+    "payment": "string, 付款方式/分期",
+    "delivery_cycle_days": <number, 交付周期天数>,
+    "warranty": "string, 质保期/维保期",
+    "penalty_clauses": "string, 违约责任",
+    "contract_type": "string, 合同类型"
+  },
+
+  "templates": {
+    "bid_doc_structure": [
+      {
+        "section_no": "string, 章节号如'第六章'",
+        "name": "string, 章节名",
+        "required": <bool>,
+        "pages_min": <number, 最少页数, 可选>
+      }
+    ],
+    "format_requirements": {
+      "copies": {"original": <number, 正本份数>, "copy": <number, 副本份数>},
+      "electronic_format": "string, 电子版格式（PDF/Word/加密zip）",
+      "binding_method": "string, 装订方式"
+    }
+  },
+
+  "logistics": {
+    "bid_submission": {
+      "method": "string, 现场递交|线上提交|邮寄",
+      "deadline": "string, 截止时间 ISO 8601",
+      "address": "string, 递交地址"
+    },
+    "bid_opening": {
+      "time": "string, 开标时间 ISO 8601",
+      "location": "string, 开标地点",
+      "live": <bool, 是否直播>
+    },
+    "presentation_demo": {
+      "required": <bool>,
+      "duration_min": <number, 时长分钟>,
+      "format": "string, 形式（现场/视频/PPT）"
+    },
+    "originals_to_bring": ["string, 现场需携带的原件清单"]
+  },
+
+  "marker_extractions": {
+    "extraction_summary": {
+      "total_marker_occurrences": <int, 全文标记符号总出现次数>,
+      "total_mapped": <int, 已映射到结构化字段的条数>,
+      "unmapped_count": <int, 未映射条数, 一般填 0>
+    },
+    "fatal_items": [
+      {
+        "marker": "string, 符号如★",
+        "source_page": <int, 来源页码>,
+        "raw_text": "string, 原文（完整保留, 不省略）",
+        "semantic": "string, 语义解释"
+      }
+    ],
+    "critical_items": [...],   // 结构同 fatal_items
+    "high_items": [...],
+    "medium_items": [...],
+    "low_items": [...]
+  }
+}
+
+## 关键原则
+
+1. **K 层是给用户看的精炼版**（字符串/数组），模块层是机器可读的结构化数据。两者信息一致但表达粒度不同。
+2. **数字字段必须是 JSON number**，不要带"元"/"万元"等单位。例：`budget.amount = 1650000`，不是 "165万"。
+3. **找不到信息时**：K 字段填"未找到"，模块字段填 null 或空数组/空对象。
+4. **绝不编造**：原文中没有的信息不要补全。如果只有部分信息能确定，其他字段填 null。
+5. **标记抽取尽量穷尽**：原文中每个 ★/▲/●/◆ 等符号对应的条款都要在 marker_extractions 对应优先级数组里出现。
+6. **跨章推理**：K04 字符串与 base.budget.amount 应该一致；K05 与 logistics.bid_submission.deadline 应该一致。
+7. **输出必须是合法 JSON**，放在 ```json 代码块中或直接输出。
+"""
+
+
+def full_parse_messages(full_text: str) -> list[dict]:
+    """
+    阶段 1：单次全量解析 prompt。
+    System prompt 定义完整 JSON schema；user prompt 是文档全文。
+
+    依赖：DeepSeek V3.1+/V4 1M 上下文，79 页文档约 25K tokens，
+    加上 system 约 27K tokens，远在 1M 上下文的承受范围。
+
+    Returns:
+        OpenAI 格式 messages 列表
+    """
+    return [
+        {"role": "system", "content": FULL_PARSE_SYSTEM},
+        {"role": "user", "content": (
+            f"以下是完整招标文件（共 {len(full_text)} 字符）。\n"
+            f"请按 system prompt 的 schema 一次性输出全部 JSON。\n\n"
+            f"---\n\n{full_text}"
+        )},
+    ]

@@ -128,7 +128,7 @@ import { ElMessage } from 'element-plus'
 import {
   getProject, createProject, parseTender, confirmParse, uploadTender,
   matchMaterials, generateTender, exportTender,
-  parseStep1, parseStep2, parseStep3, parseStep4, parseStep5,
+  parseStep1, parseStep2, parseStep3,
 } from '@/api'
 import ChatMessage from '@/components/ChatMessage.vue'
 import ChatInput from '@/components/ChatInput.vue'
@@ -175,7 +175,7 @@ const parserResult = ref<ParsedData | null>(null)
 const uploading = ref(false)
 const activeTab = ref<'chat' | 'requirements'>('chat')
 const stepProgress = ref<Array<{ status: 'idle' | 'loading' | 'done' | 'error' | 'skipped'; summary?: any }>>(
-  Array(5).fill(null).map(() => ({ status: 'idle' }))
+  Array(3).fill(null).map(() => ({ status: 'idle' }))
 )
 
 // 解析完成后自动跳到「招标文件要求」tab
@@ -193,7 +193,7 @@ watch(() => route.params.id, async (newId, oldId) => {
   parserResult.value = null
   messages.value = []
   subBids.value = []
-  stepProgress.value = Array(5).fill(null).map(() => ({ status: 'idle' }))
+  stepProgress.value = Array(3).fill(null).map(() => ({ status: 'idle' }))
   activeTab.value = 'chat'
   await fetchProject()
 })
@@ -267,10 +267,10 @@ const scrollBottom = async () => {
   }
 }
 
-// 5 步管道串行调用：边跑边更新聊天里的 el-steps
+// 3 步管道串行调用：边跑边更新聊天里的 el-steps（阶段 1：1M 上下文单调用）
 async function runStepwiseParse(mode: 'auto' | 'quick' | 'full' | 'manual'): Promise<ParsedData | null> {
   if (!project.value) return null
-  const STEP_NAMES = ['提取文本', '标记语义识别', '标记抽取', '字段抽取', '合并校验']
+  const STEP_NAMES = ['提取文本', 'LLM 解析', '校验合并']
   // 添加一条带 steps 的进度消息
   const initialSteps: StepProgress[] = STEP_NAMES.map((n, i) => ({
     name: n,
@@ -278,7 +278,7 @@ async function runStepwiseParse(mode: 'auto' | 'quick' | 'full' | 'manual'): Pro
   }))
   addMsg({
     role: 'ai',
-    content: `🔄 开始解析（${mode} 模式）— 共 5 步：`,
+    content: `🔄 开始解析（${mode} 模式）— 共 3 步：`,
     time: now(),
     steps: initialSteps,
   })
@@ -295,44 +295,28 @@ async function runStepwiseParse(mode: 'auto' | 'quick' | 'full' | 'manual'): Pro
   }
 
   try {
-    // Step 1
+    // Step 1 — 文本提取（<1s）
     const r1 = await parseStep1(project.value.id, mode)
     setStep(0, { status: 'done', summary: r1.data.summary, elapsed_sec: r1.data.elapsed_sec })
-    // 启动 step 2 loading
     setStep(1, { status: 'loading' })
 
-    // Step 2
+    // Step 2 — 单次 LLM 全量解析（~20-40s）
     const r2 = await parseStep2(project.value.id)
     if (r2.data.status === 'skipped') {
       setStep(1, { status: 'skipped' })
+    } else if (r2.data.status === 'manual' || r2.data.status === 'error') {
+      setStep(1, { status: 'error', summary: r2.data.summary })
+      throw new Error(r2.data.summary?._error || 'LLM 解析失败')
     } else {
       setStep(1, { status: 'done', summary: r2.data.summary, elapsed_sec: r2.data.elapsed_sec })
     }
     setStep(2, { status: 'loading' })
 
-    // Step 3
+    // Step 3 — 校验合并 + 落库
     const r3 = await parseStep3(project.value.id)
-    if (r3.data.status === 'skipped') {
-      setStep(2, { status: 'skipped' })
-    } else {
-      setStep(2, { status: 'done', summary: r3.data.summary, elapsed_sec: r3.data.elapsed_sec })
-    }
-    setStep(3, { status: 'loading' })
+    setStep(2, { status: 'done', summary: r3.data.summary, elapsed_sec: r3.data.elapsed_sec })
 
-    // Step 4
-    const r4 = await parseStep4(project.value.id)
-    if (r4.data.status === 'skipped') {
-      setStep(3, { status: 'skipped' })
-    } else {
-      setStep(3, { status: 'done', summary: r4.data.summary, elapsed_sec: r4.data.elapsed_sec })
-    }
-    setStep(4, { status: 'loading' })
-
-    // Step 5
-    const r5 = await parseStep5(project.value.id)
-    setStep(4, { status: 'done', summary: r5.data.summary, elapsed_sec: r5.data.elapsed_sec })
-
-    const parsed = r5.data.parsed_data as ParsedData
+    const parsed = r3.data.parsed_data as ParsedData
     parserResult.value = parsed
     if (project.value) project.value.status = 'parsed'
     // 同步 DB 中的最新 project 数据
@@ -344,7 +328,7 @@ async function runStepwiseParse(mode: 'auto' | 'quick' | 'full' | 'manual'): Pro
     return parsed
   } catch (e: any) {
     // 找到当前 loading 的 step 标为 error
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       const s = stepProgress.value[i]
       if (s.status === 'loading') {
         setStep(i, { status: 'error' })
