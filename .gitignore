@@ -20,6 +20,9 @@ Thumbs.db
 
 # Node
 node_modules/
+.next/
+.turbo/
+next-env.d.ts
 
 # Project-specific (regenerate from source)
 .session.json

@@ -1,0 +1,43 @@
+/* QuickBid — Document Studio Design System
+   Warm editorial palette. Not AI. Clean, professional, human.
+   Migrated from web/src/style.css (Vue 3 + Element Plus) */
+
+@import "tailwindcss";
+
+@theme inline {
+  /* Warm palette */
+  --color-paper: #fffbeb;
+  --color-ink: #44403c;
+  --color-ink-light: #78716c;
+  --color-stone: #a8a29e;
+  --color-surface: #ffffff;
+  --color-border: #e7e5e4;
+  --color-amber: #d97706;
+  --color-amber-light: #fef3c7;
+  --color-success: #15803d;
+  --color-success-light: #dcfce7;
+  --color-warning: #b45309;
+  --color-danger: #b91c1c;
+
+  --font-display: 'Cormorant Garamond', Georgia, serif;
+  --font-body: 'Public Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-ink);
+  background: var(--color-paper);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-stone); border-radius: 2px; }
+
+::selection { background: var(--color-amber-light); color: var(--color-ink); }
