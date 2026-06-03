@@ -360,6 +360,10 @@ async function runStepwiseParse(mode: 'auto' | 'quick' | 'full' | 'manual'): Pro
 // ---- API handlers ----
 
 const fetchProject = async () => {
+  if (!Number.isFinite(projectId) || projectId <= 0) {
+    ElMessage.error('无效的项目 ID：' + projectId)
+    return
+  }
   projectLoading.value = true
   try {
     const res = await getProject(projectId)
@@ -415,7 +419,14 @@ const fetchProject = async () => {
       })
     }
   } catch (e: any) {
-    ElMessage.error('加载项目失败：' + (e?.response?.data?.detail || e?.message || ''))
+    let msg = e?.response?.data?.detail || e?.message
+    // FastAPI 422 返回的 detail 是数组，强行 stringify 会得 [object Object]
+    if (Array.isArray(msg)) msg = msg.map((d: any) => d?.msg || JSON.stringify(d)).join('；')
+    if (typeof msg === 'object' && msg) {
+      try { msg = JSON.stringify(msg) } catch { msg = String(msg) }
+    }
+    if (!msg) msg = '未知错误'
+    ElMessage.error('加载项目失败：' + msg)
   } finally {
     projectLoading.value = false
   }

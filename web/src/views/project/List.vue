@@ -77,7 +77,14 @@ const handleCreate = async () => {
   finally { creating.value = false }
 }
 
-const goDetail = (id: number) => router.push(`/projects/${id}`)
+const goDetail = (idOrRow: number | { id?: number } | undefined) => {
+  const id = typeof idOrRow === 'number' ? idOrRow : idOrRow?.id
+  if (!id || !Number.isFinite(Number(id))) {
+    ElMessage.error('无效的项目 ID')
+    return
+  }
+  router.push(`/projects/${id}`)
+}
 
 onMounted(() => { store.fetchProjects() })
 </script>
