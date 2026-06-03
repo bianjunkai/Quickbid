@@ -43,59 +43,74 @@
       </div>
     </div>
 
-    <!-- Messages -->
-    <div class="chat-messages" ref="messagesEl">
-      <div v-if="!projectLoading && messages.length === 0" class="chat-empty">
-        <div class="empty-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <!-- Tabs: chat + tender requirements (only when parsed) -->
+    <el-tabs v-model="activeTab" class="chat-tabs">
+      <el-tab-pane label="对话" name="chat">
+        <div class="tab-chat">
+          <!-- Messages -->
+          <div class="chat-messages" ref="messagesEl">
+            <div v-if="!projectLoading && messages.length === 0" class="chat-empty">
+              <div class="empty-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              </div>
+              <p>开始与 AI 助手对话，完成标书制作</p>
+              <p class="empty-hint">例如：「新建项目：XX医院信息系统投标」</p>
+            </div>
+
+            <template v-for="msg in messages" :key="msg.id">
+              <ChatMessage
+                :role="msg.role"
+                :content="msg.content"
+                :header="msg.header"
+                :time="msg.time"
+                :cards="msg.cards"
+                :checks="msg.checks"
+                :chapters="msg.chapters"
+                :animate="msg.animate !== false"
+              />
+            </template>
+
+            <!-- Typing indicator -->
+            <div v-if="waiting" class="typing-row">
+              <div class="avatar ai-avatar-sm">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/></svg>
+              </div>
+              <TypingIndicator />
+            </div>
+          </div>
+
+          <!-- Error banner -->
+          <div v-if="errorMsg" class="chat-error">
+            <span>{{ errorMsg }}</span>
+            <button @click="errorMsg = ''" class="error-dismiss">✕</button>
+          </div>
+
+          <!-- Input -->
+          <ChatInput
+            ref="inputRef"
+            :placeholder="inputPlaceholder"
+            :disabled="waiting"
+            :sending="waiting"
+            :quick-replies="quickReplies"
+            @send="handleSend"
+            @quick-reply="handleQuickReply"
+          />
         </div>
-        <p>开始与 AI 助手对话，完成标书制作</p>
-        <p class="empty-hint">例如：「新建项目：XX医院信息系统投标」</p>
-      </div>
+      </el-tab-pane>
 
-      <template v-for="msg in messages" :key="msg.id">
-        <ChatMessage
-          :role="msg.role"
-          :content="msg.content"
-          :header="msg.header"
-          :time="msg.time"
-          :cards="msg.cards"
-          :checks="msg.checks"
-          :chapters="msg.chapters"
-          :animate="msg.animate !== false"
-        />
-      </template>
-
-      <!-- Typing indicator -->
-      <div v-if="waiting" class="typing-row">
-        <div class="avatar ai-avatar-sm">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/></svg>
+      <el-tab-pane
+        v-if="project?.status === 'parsed' && parserResult"
+        label="招标文件要求"
+        name="requirements"
+      >
+        <div class="tab-requirements">
+          <ParserResultPanel :data="parserResult" embedded />
         </div>
-        <TypingIndicator />
+      </el-tab-pane>
+    </el-tabs>
       </div>
-    </div>
-
-    <!-- Error banner -->
-    <div v-if="errorMsg" class="chat-error">
-      <span>{{ errorMsg }}</span>
-      <button @click="errorMsg = ''" class="error-dismiss">✕</button>
-    </div>
-
-    <!-- Input -->
-    <ChatInput
-      ref="inputRef"
-      :placeholder="inputPlaceholder"
-      :disabled="waiting"
-      :sending="waiting"
-      :quick-replies="quickReplies"
-        @send="handleSend"
-        @quick-reply="handleQuickReply"
-      />
-      </div>
-      <!-- Right sidebar: Parser report when parsed, else File panel -->
-      <ParserResultPanel v-if="project?.status === 'parsed' && parserResult" :data="parserResult" />
+      <!-- Right sidebar: File panel (always) -->
       <FilePanel
-        v-else
         :project-name="project?.name"
         :tender-file="tenderFileName"
         :sub-bids="subBids"
@@ -107,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -149,6 +164,13 @@ const subBids = ref<SubBid[]>([])
 
 const parserResult = ref<ParsedData | null>(null)
 const uploading = ref(false)
+const activeTab = ref<'chat' | 'requirements'>('chat')
+
+// 解析完成后自动跳到「招标文件要求」tab
+watch(
+  () => project.value?.status,
+  (s) => { if (s === 'parsed') activeTab.value = 'requirements' }
+)
 
 const tenderFileName = computed(() => {
   const path = project.value?.tender_file_path
@@ -396,6 +418,16 @@ onMounted(fetchProject)
 }
 .upload-banner-text strong { color: var(--qb-ink); font-size: 13px; }
 .upload-banner-text p { margin: 4px 0 0; font-size: 11px; color: var(--qb-ink-light); }
+
+.chat-tabs { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.chat-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 24px; flex-shrink: 0; border-bottom: 1px solid var(--qb-border); }
+.chat-tabs :deep(.el-tabs__nav-wrap)::after { height: 0; }
+.chat-tabs :deep(.el-tabs__item) { font-size: 13px; font-weight: 500; height: 40px; line-height: 40px; }
+.chat-tabs :deep(.el-tabs__content) { flex: 1; padding: 0; overflow: hidden; }
+.chat-tabs :deep(.el-tab-pane) { height: 100%; }
+
+.tab-chat { height: 100%; display: flex; flex-direction: column; }
+.tab-requirements { height: 100%; overflow: hidden; }
 .chat-header-right { display: flex; gap: 6px; }
 .header-action-btn {
   width: 32px; height: 32px; border-radius: var(--qb-radius);

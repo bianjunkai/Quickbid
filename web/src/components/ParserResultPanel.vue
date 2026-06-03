@@ -1,5 +1,5 @@
 <template>
-  <aside class="prp" v-if="data">
+  <aside class="prp" :class="{ 'prp--embedded': embedded }" v-if="data">
     <!-- Meta header -->
     <div class="prp-hd">
       <div class="prp-hd-row">
@@ -196,7 +196,7 @@ import { computed, ref } from 'vue'
 import type { ParsedData, MarkerItem } from '@/types'
 import SchemaRenderer from './SchemaRenderer.vue'
 
-const props = defineProps<{ data: ParsedData | null }>()
+const props = withDefaults(defineProps<{ data: ParsedData | null; embedded?: boolean }>(), { embedded: false })
 
 const activeTab = ref('k01k14')
 
@@ -338,6 +338,10 @@ function formatTime(s: string) {
   flex-direction: column;
   overflow: hidden;
   flex-shrink: 0;
+}
+.prp--embedded {
+  width: 100%;
+  border-left: none;
 }
 
 .prp-hd {
