@@ -556,6 +556,11 @@ async def _run_parse_sse(project_id: int, mode: str):
             # full / quick 模式 — 流式调用 LLM
             accumulated_text: list[str] = []
             text_id = f"llm_{project_id}"
+            # AI SDK Protocol: text-delta 必须用 text-start/text-end 包裹
+            q.put({"data": json.dumps(
+                {"type": "text-start", "id": text_id},
+                ensure_ascii=False,
+            )})
             for delta in pipeline.step2_full_parse_stream(text):
                 accumulated_text.append(delta)
                 # 把每个 token emit 给前端
@@ -563,6 +568,10 @@ async def _run_parse_sse(project_id: int, mode: str):
                     {"type": "text-delta", "id": text_id, "delta": delta},
                     ensure_ascii=False,
                 )})
+            q.put({"data": json.dumps(
+                {"type": "text-end", "id": text_id},
+                ensure_ascii=False,
+            )})
 
             step2_elapsed = round(time.time() - t0, 2)
             full_text = "".join(accumulated_text)
