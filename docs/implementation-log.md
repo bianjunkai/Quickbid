@@ -90,3 +90,75 @@ Quickbid/
 ### 后续待处理
 
 - Phase 3：多 Agent 框架搭建（agents/ + orchestrator.py）
+
+## 2026-06-03：前端架构迁移 — Stage 2 (SSE 基建 + Next.js 15 + assistant-ui)
+
+### 动机
+
+旧 `web/` (Vue 3 + Element Plus) 在 `parser_agent` 1M 上下文管道下暴露三个结构性问题：
+
+1. 65 秒解析黑屏（无流式 token 反馈）
+2. `ParserResultPanel.vue` 519 行单文件，K01-K14 退化为 chat cards
+3. `ChatView.vue` 633 行大文件，难以维护
+
+### Stage 2.A — 后端 SSE 基建
+
+| 文件 | 改动 |
+|---|---|
+| `requirements.txt` | + `sse-starlette>=2.1.3` |
+| `agents/bid_parser/pipeline.py` | + `BidLLMClient.chat_stream()` 真流式 LLM；+ `step2_full_parse_stream()` 包装 |
+| `sse_stream.py` (新) | `stream_text` / `stream_tool_call` / `stream_finish` / `stream_error` 工具，emit AI SDK Data Stream Protocol |
+| `main.py` | + `GET /projects/{id}/parse/stream`（旧三步解析回退）；+ `POST /projects/{id}/chat`（关键词路由主端点）；+ 关键词路由（`放好了/继续/生成/终审/导出`） |
+| (内部) | 同步 LLM 阻塞 event loop 问题：用 `threading.Thread` + `queue.Queue` 把同步生成器搬到 worker thread，async 端通过 `loop.run_in_executor` pull |
+
+### Stage 2.B — Next.js 15 壳
+
+| 文件 | 改动 |
+|---|---|
+| `web-next/` (新) | Next.js 15.5 + React 19 + TS + Tailwind 4 |
+| `web-next/next.config.ts` | rewrites `/api/*` → `http://localhost:8000/*` |
+| `web-next/app/globals.css` | 移植 `web/src/style.css` 设计 tokens 到 Tailwind 4 `@theme inline` |
+| `web-next/app/layout.tsx` | 字体（Cormorant Garamond / Public Sans / JetBrains Mono）+ `lang="zh-CN"` |
+| `web-next/lib/api.ts` | fetch 客户端（listProjects / getProject / createProject / uploadTender / listMaterials 等） |
+| `web-next/components/sidebar.tsx` | 左侧导航：项目列表 + 材料库 + 新建对话框 |
+| `web-next/app/projects/page.tsx` | 项目列表 |
+| `web-next/app/projects/[id]/page.tsx` | chat thread（React 19 `use()` 解 params） |
+| `web-next/app/materials/page.tsx` | 材料库 CRUD 表格 |
+
+### Stage 2.C — assistant-ui 集成
+
+| 文件 | 改动 |
+|---|---|
+| `web-next/components/chat-thread.tsx` | 重写：`useChat` + `DefaultChatTransport` 绑 `/api/projects/{id}/chat` |
+| `web-next/components/chat-header.tsx` (新) | 项目名 + 状态徽章 + 文件上传（status=parsing 时） |
+| `web-next/components/message-list.tsx` (新) | 渲染 `UIMessage.parts`（text / tool-XXX / dynamic-tool） |
+| `web-next/components/composer.tsx` (新) | 自动调整高度 textarea + status 相关 quick replies + send/stop |
+| `web-next/components/file-sidebar.tsx` (新) | 项目结构（主标 5 文件夹 / 陪标 / 解析概览 / 折叠切换） |
+| `web-next/components/tools/parse-tool-result.tsx` (新) | parseTender 工具 UI：input-available 进度 / output-available 4 tab |
+| `web-next/components/tools/parser-report.tsx` (新) | K01-K14 / 标记扫描 / 风险条款 / 结构化数据 4 tab |
+| `web-next/components/tools/tool-fallback.tsx` (新) | 通用 JSON 工具渲染（match / generate / review / export 暂用 fallback） |
+| `main.py` (修复) | LLM 流式 `text-delta` 必须用 `text-start`/`text-end` 包裹（AI SDK Protocol） |
+
+### 验证
+
+```bash
+# 启动后端
+.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+# 启动前端
+cd web-next && npm run dev
+
+# 验证 SSE
+curl -N -X POST http://localhost:8000/projects/1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"继续"}]}'
+# → data: {"type":"tool-input-available", toolName:"matchMaterials", ...}
+```
+
+TypeScript 编译：`npx tsc --noEmit` → TYPECHECK_OK
+浏览器：项目页 chat thread 加载 → 输入「继续」→ 看到 `matchMaterials` 工具调用 → JSON 渲染
+
+### 后续待处理
+
+- Stage 2.D：删除 `web/` 目录（destructive，需用户确认）
+- 添加 match / generate / review / export 工具 UI（目前用 ToolFallback）
+- 部署到 Vercel / Docker

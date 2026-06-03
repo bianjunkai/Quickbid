@@ -6,9 +6,11 @@
 
 ## 技术栈
 
-- **Python FastAPI** — REST API + 对话逻辑
+- **Python FastAPI** — REST API + SSE 流式端点
 - **SQLAlchemy + SQLite** — 本地数据库
-- **Vue 3 + Element Plus** — Web 前端
+- **Next.js 15 + React 19 + Tailwind 4** — Web 前端
+- **Vercel AI SDK** — `useChat` + Data Stream Protocol (SSE)
+- **sse-starlette** — 后端 SSE
 - **PyMuPDF** — PDF 解析
 - **python-docx** — Word 导出
 - **DeepSeek API** — AI Agent（Parser / Matcher / Generator / Reviewer / SubBid）
@@ -44,7 +46,8 @@ python cli.py
 python main.py
 
 # Web 前端（另开终端）
-cd web && npm install && npm run dev
+cd web-next && npm install && npm run dev
+# → http://localhost:3000（API 通过 /api/* 自动代理到 :8000）
 ```
 
 ## 工作流

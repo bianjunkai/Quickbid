@@ -20,10 +20,10 @@ python cli.py
 # FastAPI 服务（Web 前端需要）
 python main.py                # http://localhost:8000
 
-# Web 前端
-cd web
+# Web 前端（Next.js 15）
+cd web-next
 npm install
-npm run dev                   # http://localhost:5173，API 代理到 :8000
+npm run dev                   # http://localhost:3000，API 代理到 :8000（/api/* → :8000/*）
 ```
 
 无测试套件。验证方式：`python -c "from models import init_db; print('OK')"` 和手动端到端测试。
@@ -47,7 +47,7 @@ main.py（FastAPI）─────┘
 ```
 
 - `cli.py` — 纯交互层，`ConversationManager` 接收用户输入，委托给 Orchestrator
-- `main.py` — FastAPI REST API（11 个端点），供 `web/` 前端调用
+- `main.py` — FastAPI REST API（11 个 REST 端点 + 2 个 SSE 端点），供 `web-next/` 前端调用
 - `orchestrator.py` — Agent 编排器，待实现
 - `agents/` — 5 个特化 Agent，待实现
 
@@ -65,9 +65,24 @@ SQLAlchemy + SQLite。四个实体：`Project`（status 为纯字符串 `"parsin
 
 **重要：** status 和 type 是纯字符串，不是 Enum。`models.py` 中没有 `TenderType` 或 `ProjectStatus` 类。
 
-### Web 前端（web/）
+### Web 前端（web-next/）
 
-Vue 3 + TypeScript + Element Plus + Vite。路由：`/projects`、`/projects/:id`（7 步向导）、`/materials`。API 层 `web/src/api/index.ts` 通过 Vite proxy 调用 FastAPI。`web/src/store/project.ts` 是 Pinia store。
+Next.js 15 + React 19 + TypeScript + Tailwind 4 + Vercel AI SDK。路由：`/projects`、`/projects/[id]`（chat thread）、`/materials`。
+
+- **SSE 协议**：后端用 `sse-starlette` 实现 [Vercel AI SDK Data Stream Protocol](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol)；前端 `@ai-sdk/react` 的 `useChat` + `DefaultChatTransport` 消费
+- **状态机**：保留关键词路由（`放好了`→parse，`继续`→match，`生成`→generate，`终审`→review，`导出`→export），不重做
+- **API 代理**：`next.config.ts` 的 `rewrites` 把 `/api/*` 转发到 `http://localhost:8000/*`
+- **设计 tokens**：Tailwind 4 `@theme inline` 直接用 CSS 变量（暖色编辑风格，移植自旧 Vue `style.css`）
+- **历史**：Vue 3 + Element Plus 版本曾在 `web/` 目录，迁移完成已删除（见 `docs/architecture-decisions.md`）
+
+### SSE 端点（AI SDK Data Stream Protocol）
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/projects/{id}/parse/stream` | GET | 旧版三步解析流（保留回退） |
+| `/projects/{id}/chat` | POST | 关键词路由主端点，输入 `{messages: [...]}` 输出 SSE |
+
+事件类型：`start` → `text-start`/`text-delta`/`text-end` → `tool-input-available` → `tool-output-available` → `finish-step` → `finish-message` → `finish`。
 
 ## 目录约定
 
