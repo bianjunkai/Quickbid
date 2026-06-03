@@ -84,18 +84,18 @@ MARKER_EXTRACTION_SYSTEM = """你是招标文件标记内容抽取专家。
 ## 输出格式
 ```json
 [
-  {
+  {{
     "marker": "{symbol}",
     "id": "<编号，如 {symbol}001>",
     "semantic": "{semantic_label}",
     "raw_text": "<标记对应的原文（完整保留）>",
     "source_page": <页码>,
     "source_line": "<所在段落/行号>",
-    "mapped_to": {
-      "field_path": "<目标字段路径>",
-    },
+    "mapped_to": {{
+      "field_path": "<目标字段路径>"
+    }},
     "compliance_action": "<投标方应如何响应该标记内容>"
-  }
+  }}
 ]
 ```
 

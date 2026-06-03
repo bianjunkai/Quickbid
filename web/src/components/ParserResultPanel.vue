@@ -40,6 +40,33 @@
         type="error" :closable="false" show-icon
         class="prp-hint"
       />
+
+      <!-- 模式选择 + 重解析 -->
+      <div class="prp-mode">
+        <div class="prp-mode-row">
+          <span class="prp-mode-lbl">解析模式</span>
+          <el-radio-group v-model="selectedMode" size="small">
+            <el-radio-button
+              v-for="opt in modeOptions" :key="opt.value"
+              :value="opt.value"
+            >{{ opt.label }}</el-radio-button>
+          </el-radio-group>
+          <el-button
+            size="small" type="primary" plain
+            :disabled="reparsing || selectedMode === (data._mode || '')"
+            :loading="reparsing"
+            @click="handleReparse"
+          >
+            {{ reparsing ? '解析中…' : '重解析' }}
+          </el-button>
+        </div>
+        <p class="prp-mode-tip">
+          <span v-if="currentModeDesc">{{ currentModeDesc }}</span>
+          <span v-if="selectedMode !== (data._mode || '')" class="prp-mode-dirty">
+            （已选 {{ modeLabelOf(selectedMode) }}，点击「重解析」生效）
+          </span>
+        </p>
+      </div>
     </div>
 
     <!-- Tabs -->
@@ -192,11 +219,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ParsedData, MarkerItem } from '@/types'
 import SchemaRenderer from './SchemaRenderer.vue'
 
 const props = withDefaults(defineProps<{ data: ParsedData | null; embedded?: boolean }>(), { embedded: false })
+const emit = defineEmits<{ reparse: [mode: 'auto' | 'quick' | 'full' | 'manual'] }>()
 
 const activeTab = ref('k01k14')
 
@@ -240,6 +268,44 @@ const modeTagType = computed<'success' | 'warning' | 'danger' | 'info'>(() => {
   if (m === 'manual' || m === 'error') return 'danger'
   return 'info'
 })
+
+// ---- 模式选择器 ----
+const modeOptions = [
+  { value: 'auto',   label: 'auto · 自动',   desc: '由系统按文件大小挑选 quick / full' },
+  { value: 'quick',  label: 'quick · 快速',  desc: '1 次 LLM 调用，只抽 K01-K14（无结构化数据）' },
+  { value: 'full',   label: 'full · 完整',   desc: '5 步管道，~10 次 LLM，K01-K14 + 完整 schema（推荐）' },
+  { value: 'manual', label: 'manual · 降级', desc: '不调 LLM，仅文本提取 + 标记扫描（无 key 时使用）' },
+] as const
+
+const selectedMode = ref<'auto' | 'quick' | 'full' | 'manual'>(
+  (props.data?._mode as any) || 'full'
+)
+const reparsing = ref(false)
+
+// 报告换了 → 同步 selectedMode 到当前 _mode
+watch(() => props.data?._mode, (m) => {
+  if (m && !reparsing.value) selectedMode.value = m as any
+}, { immediate: false })
+
+const currentModeDesc = computed(() => {
+  const m = props.data?._mode
+  if (!m) return ''
+  const opt = modeOptions.find(o => o.value === m)
+  return opt ? `当前结果：${opt.label} — ${opt.desc}` : ''
+})
+function modeLabelOf(m: string) {
+  return modeOptions.find(o => o.value === m)?.label || m
+}
+async function handleReparse() {
+  if (reparsing.value) return
+  reparsing.value = true
+  try {
+    emit('reparse', selectedMode.value)
+  } finally {
+    // 真正完成在 ChatView 拿到新数据后；这里用 timeout 兜底避免按钮卡住
+    setTimeout(() => { reparsing.value = false }, 1500)
+  }
+}
 
 // ---- Markers ----
 const markerSummary = computed(() => props.data?._marker_summary)
@@ -357,6 +423,25 @@ function formatTime(s: string) {
 .prp-meta-k { color: var(--qb-stone); text-transform: uppercase; letter-spacing: 0.3px; }
 .prp-meta-v { color: var(--qb-ink); font-weight: 500; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prp-hint { margin-top: 10px; }
+.prp-mode {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed var(--qb-line, #e3dccd);
+}
+.prp-mode-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.prp-mode-lbl {
+  font-size: 11px; color: var(--qb-stone);
+  text-transform: uppercase; letter-spacing: 0.4px;
+  font-weight: 600;
+}
+.prp-mode-tip {
+  margin: 6px 0 0; font-size: 11px; color: var(--qb-stone);
+  line-height: 1.5;
+}
+.prp-mode-dirty {
+  margin-left: 6px; color: var(--qb-accent, #8a5a2b); font-weight: 500;
+}
 
 .prp-tabs { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .prp-tabs :deep(.el-tabs__content) { flex: 1; overflow-y: auto; padding: 12px 14px; }

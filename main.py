@@ -218,8 +218,13 @@ async def upload_tender(project_id: int, file: UploadFile = File(...)):
 
 
 @app.post("/projects/{project_id}/parse")
-def parse_tender(project_id: int):
-    """由 ParserAgent 解析招标文件，提取 K01-K14。"""
+def parse_tender(project_id: int, mode: Optional[str] = None):
+    """由 ParserAgent 解析招标文件，提取 K01-K14 + 结构化数据。
+
+    Query:
+        mode: 解析模式覆盖 — auto/quick/full/manual。
+              缺省走 config.yaml 的 parser.mode（默认 full）。
+    """
     session = get_session()
     project = session.get(Project, project_id)
     if not project:
@@ -232,6 +237,8 @@ def parse_tender(project_id: int):
     orch = Orchestrator(tender_config)
     orch.ctx.project_id = project_id
     orch.ctx.parsed_data["K01_项目名称"] = project.name
+    if mode:
+        orch.ctx.parser_mode_override = mode
 
     parsed = orch.agents["parser"].execute(orch.ctx)
 

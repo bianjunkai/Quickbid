@@ -97,8 +97,11 @@ class ParserAgent(BaseAgent):
         if not Path(file_path).exists():
             return self._error_result(f"招标文件不存在：{file_path}")
 
-        # 决定执行模式
-        mode = self.config.get("mode", "auto")
+        # 决定执行模式：ctx 覆盖 > config.parser.mode > auto
+        if getattr(ctx, "parser_mode_override", None) in {"auto", "quick", "full", "manual"}:
+            mode = ctx.parser_mode_override
+        else:
+            mode = self.config.get("parser", {}).get("mode", "auto")
         if mode == "auto":
             mode = self._auto_select_mode(file_path)
 

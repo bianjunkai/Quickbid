@@ -16,6 +16,9 @@ class AgentContext:
     tender_id: Optional[int] = None
     tender_type: str = "main"
 
+    # 解析模式覆盖（None = 用 config.parser.mode 里的默认）
+    parser_mode_override: Optional[str] = None
+
     # 解析产物
     parsed_data: dict[str, Any] = field(default_factory=dict)
 

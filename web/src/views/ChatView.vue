@@ -104,7 +104,7 @@
         name="requirements"
       >
         <div class="tab-requirements">
-          <ParserResultPanel :data="parserResult" embedded />
+          <ParserResultPanel :data="parserResult" embedded @reparse="onReparse" />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -281,7 +281,7 @@ const handleSend = async (text: string) => {
     let res: any
 
     if (text.includes('放好了') || text.includes('上传了') || text.includes('好了')) {
-      // Parse tender
+      // Parse tender（首次解析，不传 mode → 走后端 config 默认）
       res = await parseTender(projectId)
       parserResult.value = res.data.parsed_data as ParsedData
       // 同步项目状态
@@ -343,6 +343,31 @@ const handleSend = async (text: string) => {
 
 const handleQuickReply = (value: string) => {
   handleSend(value)
+}
+
+// 解析报告头部「重解析」按钮：直接重跑 /parse?mode=xxx，不走对话
+async function onReparse(mode: 'auto' | 'quick' | 'full' | 'manual') {
+  if (!project.value) return
+  waiting.value = true
+  try {
+    const res = await parseTender(project.value.id, mode)
+    parserResult.value = res.data.parsed_data as ParsedData
+    if (project.value) project.value.status = 'parsed'
+    addMsg({
+      role: 'ai',
+      content: `🔄 已用 ${mode} 模式重解析，报告已更新。`,
+      time: now(),
+    })
+  } catch (e: any) {
+    addMsg({
+      role: 'ai',
+      content: `❌ 重解析失败：${e?.response?.data?.detail || e?.message || '未知错误'}`,
+      time: now(),
+    })
+  } finally {
+    waiting.value = false
+    await scrollBottom()
+  }
 }
 
 const handleAddSubBid = () => {

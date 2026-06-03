@@ -25,7 +25,8 @@ export const uploadTender = (id: number, file: File) => {
 }
 
 // ---- 招标文件解析 ----
-export const parseTender = (id: number) => api.post(`/projects/${id}/parse`)
+export const parseTender = (id: number, mode?: 'auto' | 'quick' | 'full' | 'manual') =>
+  api.post(`/projects/${id}/parse`, null, { params: mode ? { mode } : {} })
 
 export const confirmParse = (id: number, corrections?: Record<string, any>) =>
   api.post(`/projects/${id}/parse/confirm`, { corrections })

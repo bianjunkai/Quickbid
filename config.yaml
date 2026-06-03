@@ -26,7 +26,7 @@ tender_tool:
     key_info_count: 14  # K01-K14
 
     # 解析模式：auto（根据文件大小自动选择）/ quick（1次LLM，K01-K14）/ full（~10次LLM，完整schema）/ manual（仅PDF提取+标记扫描）
-    mode: auto
+    mode: full  # 默认走完整管道，结构化数据完整。手动 / 接口 ?mode= 覆盖。
 
     # PDF 引擎：pdfplumber（推荐，中文支持好）/ pymupdf（速度快）
     pdf_engine: pdfplumber
