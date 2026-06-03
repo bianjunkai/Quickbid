@@ -18,7 +18,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from agents.bid_parser.schema import (
     DEFAULT_MARKERS,
@@ -104,7 +104,7 @@ class BidLLMClient:
         response_format: Optional[dict] = None,
     ) -> Optional[str]:
         """
-        调用 LLM 聊天。
+        调用 LLM 聊天（非流式）。
 
         Args:
             messages: OpenAI 格式的消息列表
@@ -133,6 +133,56 @@ class BidLLMClient:
 
         response = client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        temperature: float = 0.0,
+        max_tokens: int = 16384,
+        response_format: Optional[dict] = None,
+    ) -> Iterator[str]:
+        """
+        流式调用 LLM，逐 token 产出（生成器）。
+
+        用法：
+            for token in client.chat_stream(messages):
+                print(token, end="", flush=True)
+
+        Args:
+            同 chat()
+
+        Yields:
+            LLM 响应的文本片段
+        """
+        if not self.is_available:
+            return
+
+        client = self._get_client()
+        if client is None:
+            return
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if response_format:
+            kwargs["response_format"] = response_format
+
+        try:
+            stream = client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                content = getattr(delta, "content", None)
+                if content:
+                    yield content
+        except Exception as e:
+            # 流式失败：把错误作为最后一段文本抛出
+            yield f"\n\n[STREAM_ERROR] {type(e).__name__}: {e}"
 
     def chat_json(
         self,
@@ -254,6 +304,57 @@ class BidParsePipeline:
         result["meta"]["text_length"] = len(full_text)
         result["meta"]["prompt_mode"] = "single-shot-1M-context"
 
+        return result
+
+    def step2_full_parse_stream(self, full_text: str) -> Iterator[str]:
+        """
+        流式版本的 step2_full_parse：逐 token 产出 LLM 响应文本。
+
+        适用于 SSE 端点 — 前端可看到 LLM 真正在生成 token，
+        而非面对 65 秒黑屏。
+
+        Yields:
+            LLM 输出的 JSON 文本片段（不解析，留给调用方处理）
+        """
+        if not self.llm.is_available:
+            yield "[LLM_UNAVAILABLE]"
+            return
+
+        messages = full_parse_messages(full_text)
+        for tok in self.llm.chat_stream(
+            messages, temperature=0.0, max_tokens=16384,
+            response_format={"type": "json_object"},
+        ):
+            yield tok
+
+    def collect_stream_to_dict(
+        self, stream: Iterator[str], text_length: int
+    ) -> Optional[dict]:
+        """
+        把 step2_full_parse_stream 的输出聚合成完整 JSON dict。
+
+        用途：SSE 端点一边 yield token 给前端，一边后台聚合。
+        前端拿到完整 token 流时，后端立即解析为 dict 落库。
+        """
+        chunks: list[str] = []
+        for tok in stream:
+            chunks.append(tok)
+        text = "".join(chunks)
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+            text = re.sub(r"\n?```\s*$", "", text)
+        if not text or text == "[LLM_UNAVAILABLE]":
+            return None
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        # 注入 meta
+        result.setdefault("meta", {})
+        result["meta"]["parser_version"] = "3.1.0-full-context"
+        result["meta"]["text_length"] = text_length
+        result["meta"]["prompt_mode"] = "single-shot-1M-context"
         return result
 
     # ============================================================
