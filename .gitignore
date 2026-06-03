@@ -25,6 +25,11 @@ node_modules/
 .session.json
 
 # Runtime directories (track structure with .gitkeep)
+# Ignore all runtime artifacts; only allow .gitkeep in the directories we want to keep
+materials/*
+!materials/.gitkeep
 !materials/**/.gitkeep
+projects/*
 !projects/.gitkeep
+exports/*
 !exports/.gitkeep
