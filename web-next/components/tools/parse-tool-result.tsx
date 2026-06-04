@@ -1,15 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { ChevronDown, AlertOctagon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ParserReport } from "./parser-report";
 
-/**
- * parseTender 工具的渲染。
- *  - state: input-streaming / input-available / output-available
- *  - input: { mode, projectId }
- *  - output: ParsedData（full K01-K14 + meta + 8 modules + markers）
- */
 export function ParseToolResult({
   state,
   input,
@@ -25,41 +20,62 @@ export function ParseToolResult({
 
   if (errorText) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-xs text-danger">
-        解析失败：{errorText}
+      <div className="card-soft p-4 border border-[var(--color-danger)]">
+        <div className="flex items-center gap-2 mb-2">
+          <AlertOctagon className="w-4 h-4 text-[var(--color-danger)]" />
+          <span className="text-[12px] font-semibold text-[var(--color-danger)] uppercase tracking-wider">
+            解析失败
+          </span>
+        </div>
+        <div className="text-[13px] text-[var(--color-ink)] font-mono">{errorText}</div>
       </div>
     );
   }
 
-  // input-available 但 output 还没来 → 显示进度
   if (state === "input-available" || state === "input-streaming") {
     return (
-      <div className="bg-surface border border-border rounded-sm p-3">
-        <div className="flex items-center gap-2 text-xs text-ink-light">
-          <span className="inline-block w-2 h-2 bg-amber rounded-full animate-pulse" />
-          解析进行中… (mode={input?.mode ?? "auto"})
+      <div className="card-soft p-4">
+        <div className="flex items-center gap-3">
+          <Loader2 className="w-4 h-4 text-[var(--color-primary)] animate-spin" />
+          <div className="flex-1">
+            <div className="text-[12px] font-semibold text-[var(--color-ink)]">正在解析…</div>
+            <div className="text-[11px] text-[var(--color-ink-mute)] font-mono mt-0.5">
+              mode={input?.mode ?? "auto"} · project=#{String(input?.projectId ?? 0).padStart(3, "0")}
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 h-1 rounded-full bg-[var(--color-paper-warm)] overflow-hidden">
+          <div className="h-full w-1/3 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-primary-soft)] rounded-full animate-pulse" />
         </div>
       </div>
     );
   }
 
-  // output-available → 完整报告
   if (state === "output-available" && output) {
     return (
-      <div className="bg-surface border border-border rounded-sm overflow-hidden">
+      <div className="card-soft overflow-hidden">
         <button
           onClick={() => setExpanded((e) => !e)}
-          className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-paper/50"
+          className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--color-paper-warm)] transition-colors"
+          aria-expanded={expanded}
         >
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-ink">解析报告</span>
-            <span className="text-[10px] text-stone uppercase">
-              {output._mode ?? "full"}
-            </span>
-          </div>
-          <span className="text-xs text-stone">{expanded ? "收起" : "展开"}</span>
+          <ChevronDown
+            className={cn(
+              "w-3.5 h-3.5 text-[var(--color-ink-mute)] transition-transform",
+              !expanded && "-rotate-90"
+            )}
+          />
+          <span className="w-2 h-2 rounded-full bg-[var(--color-success)]" />
+          <span className="text-[13px] font-semibold text-[var(--color-ink)]">解析报告</span>
+          <span className="text-[11px] text-[var(--color-ink-mute)] font-mono">
+            · {output._mode ?? "full"}
+          </span>
         </button>
-        {expanded && <ParserReport data={output} />}
+        {expanded && (
+          <div className="border-t border-[var(--color-border)]">
+            <ParserReport data={output} />
+          </div>
+        )}
       </div>
     );
   }

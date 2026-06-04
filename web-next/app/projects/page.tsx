@@ -2,17 +2,27 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { listProjects, type Project } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  parsing: { label: "解析中", color: "bg-amber-light text-amber" },
-  parsed: { label: "已解析", color: "bg-success-light text-success" },
-  materials_preparing: { label: "材料准备中", color: "bg-amber-light text-amber" },
-  draft_ready: { label: "草稿就绪", color: "bg-success-light text-success" },
-  reviewing: { label: "审查中", color: "bg-amber-light text-amber" },
-  done: { label: "完成", color: "bg-success-light text-success" },
+const STATUS_STATE: Record<string, "parsing" | "parsed" | "done" | "error"> = {
+  parsing: "parsing",
+  parsed: "parsed",
+  materials_preparing: "parsing",
+  draft_ready: "parsed",
+  reviewing: "parsing",
+  done: "done",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  parsing: "解析中",
+  parsed: "已解析",
+  materials_preparing: "材料准备",
+  draft_ready: "草稿就绪",
+  reviewing: "审查中",
+  done: "完成",
 };
 
 export default function ProjectsPage() {
@@ -30,63 +40,112 @@ export default function ProjectsPage() {
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto bg-[var(--color-paper)]">
         <div className="max-w-5xl mx-auto px-8 py-10">
-          <h1 className="font-display text-3xl text-ink mb-1">项目</h1>
-          <p className="text-sm text-stone mb-8">所有招标项目工作流</p>
+          {/* Header */}
+          <header className="mb-8">
+            <div className="text-[11px] text-[var(--color-ink-mute)] uppercase tracking-wider font-medium mb-2">
+              项目工作流
+            </div>
+            <h1 className="text-[36px] font-semibold text-[var(--color-ink)] leading-[1.1] tracking-tight">
+              所有项目
+            </h1>
+            <p className="mt-3 text-[14px] text-[var(--color-ink-mute)] max-w-2xl leading-relaxed">
+              创建、解析、生成、审查 — 一站式投标工作流。
+            </p>
+          </header>
+
+          {/* Stats */}
+          <div className="grid grid-cols-3 gap-3 mb-6">
+            <StatBlock label="项目总数" value={projects.length} />
+            <StatBlock
+              label="进行中"
+              value={projects.filter((p) => p.status !== "done").length}
+              accent="warning"
+            />
+            <StatBlock
+              label="已完成"
+              value={projects.filter((p) => p.status === "done").length}
+              accent="success"
+            />
+          </div>
 
           {loading ? (
-            <div className="text-sm text-stone">加载中...</div>
+            <div className="card-soft p-8 text-center text-[12px] text-[var(--color-ink-mute)]">
+              加载中…
+            </div>
           ) : error ? (
-            <div className="text-sm text-danger">{error}</div>
+            <div className="card-soft p-4 border border-[var(--color-danger)]">
+              <div className="text-[11px] text-[var(--color-danger)] font-semibold uppercase tracking-wider mb-1">错误</div>
+              <div className="text-[13px] text-[var(--color-ink)]">{error}</div>
+            </div>
           ) : projects.length === 0 ? (
-            <div className="text-sm text-stone py-12 text-center border border-dashed border-border rounded-sm">
-              暂无项目。点击左侧「新建项目」开始。
+            <div className="card-soft border-dashed py-16 text-center">
+              <div className="text-[12px] text-[var(--color-ink-mute)] mb-3">暂无项目</div>
+              <div className="text-[11px] text-[var(--color-ink-mute)]">
+                点击左侧「新建项目」按钮开始
+              </div>
             </div>
           ) : (
-            <div className="border border-border rounded-sm overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-paper text-stone text-[10px] uppercase tracking-wider">
-                  <tr>
-                    <th className="text-left px-4 py-3 font-medium">项目</th>
-                    <th className="text-left px-4 py-3 font-medium">状态</th>
-                    <th className="text-left px-4 py-3 font-medium">创建时间</th>
-                    <th className="text-right px-4 py-3 font-medium">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {projects.map((p) => {
-                    const status = STATUS_LABELS[p.status] || { label: p.status, color: "bg-stone/20 text-stone" };
-                    return (
-                      <tr key={p.id} className="border-t border-border hover:bg-paper/50">
-                        <td className="px-4 py-3">
-                          <Link href={`/projects/${p.id}`} className="font-medium text-ink hover:text-amber">
-                            {p.name}
-                          </Link>
-                          <div className="text-xs text-stone mt-0.5">#{p.id}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={cn("text-[10px] px-2 py-0.5 rounded-sm", status.color)}>
-                            {status.label}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-stone">
-                          {new Date(p.created_at).toLocaleString("zh-CN")}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <Link href={`/projects/${p.id}`} className="text-xs text-amber hover:underline">
-                            打开 →
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="card-soft overflow-hidden">
+              {projects.map((p, i) => {
+                const state = STATUS_STATE[p.status] || "parsing";
+                const label = STATUS_LABEL[p.status] || p.status;
+                return (
+                  <Link
+                    key={p.id}
+                    href={`/projects/${p.id}`}
+                    className={cn(
+                      "group flex items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--color-primary-bg)] min-h-[64px]",
+                      i < projects.length - 1 && "border-b border-[var(--color-border)]"
+                    )}
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-[var(--color-paper-warm)] border border-[var(--color-border)] flex items-center justify-center text-[12px] font-mono font-semibold text-[var(--color-primary)] shrink-0">
+                      #{String(p.id).padStart(2, "0")}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[14px] text-[var(--color-ink)] font-medium group-hover:text-[var(--color-primary-deep)] transition-colors truncate">
+                        {p.name}
+                      </div>
+                      <div className="text-[11px] text-[var(--color-ink-mute)] font-mono mt-0.5 tabular-nums">
+                        {new Date(p.created_at).toISOString().slice(0, 16).replace("T", " ")}
+                      </div>
+                    </div>
+                    <span className="pill-soft" data-state={state}>
+                      <span className="dot" />
+                      {label}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-[var(--color-ink-mute)] group-hover:text-[var(--color-primary)] group-hover:translate-x-0.5 transition-transform" />
+                  </Link>
+                );
+              })}
             </div>
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+function StatBlock({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: number;
+  accent?: "success" | "warning";
+}) {
+  const color =
+    accent === "success" ? "var(--color-success)" : accent === "warning" ? "var(--color-warning)" : "var(--color-ink)";
+  return (
+    <div className="card-soft p-4">
+      <div className="text-[11px] text-[var(--color-ink-mute)] uppercase tracking-wider font-medium">
+        {label}
+      </div>
+      <div className="text-[28px] font-semibold tabular-nums leading-none mt-2" style={{ color }}>
+        {String(value).padStart(2, "0")}
+      </div>
     </div>
   );
 }

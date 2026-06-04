@@ -1,17 +1,36 @@
 "use client";
 
 import { useState } from "react";
-import { BarChart3, MessageSquare, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  Pencil,
+  MessageSquare,
+  BarChart3,
+  Settings,
+  Sun,
+  Moon,
+  Download,
+  Trash2,
+} from "lucide-react";
 import type { ProjectDetail } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  parsing: { label: "解析中", color: "bg-amber-light text-amber" },
-  parsed: { label: "已解析", color: "bg-success-light text-success" },
-  materials_preparing: { label: "材料准备中", color: "bg-amber-light text-amber" },
-  draft_ready: { label: "草稿就绪", color: "bg-success-light text-success" },
-  reviewing: { label: "审查中", color: "bg-amber-light text-amber" },
-  done: { label: "完成", color: "bg-success-light text-success" },
+const STATUS_STATE: Record<string, "parsing" | "parsed" | "done" | "error"> = {
+  parsing: "parsing",
+  parsed: "parsed",
+  materials_preparing: "parsing",
+  draft_ready: "parsed",
+  reviewing: "parsing",
+  done: "done",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  parsing: "解析中",
+  parsed: "已解析",
+  materials_preparing: "材料准备",
+  draft_ready: "草稿就绪",
+  reviewing: "审查中",
+  done: "完成",
 };
 
 export function ChatHeader({
@@ -31,11 +50,8 @@ export function ChatHeader({
 }) {
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const status =
-    STATUS_LABELS[project.status] || {
-      label: project.status,
-      color: "bg-stone/20 text-stone",
-    };
+  const state = STATUS_STATE[project.status] || "parsing";
+  const statusText = STATUS_LABEL[project.status] || project.status;
 
   const handleFile = async (file: File) => {
     setUploading(true);
@@ -50,87 +66,156 @@ export function ChatHeader({
   };
 
   return (
-    <header className="border-b border-border bg-surface px-8 py-3 flex items-center gap-4">
-      <div className="flex-1 min-w-0">
-        <h1 className="font-display text-xl text-ink truncate">
-          {project.name}
-        </h1>
-        <div className="flex items-center gap-2 mt-0.5">
-          <span
-            className={cn(
-              "text-[9px] px-1.5 py-0.5 rounded-sm uppercase tracking-wider",
-              status.color
-            )}
-          >
-            {status.label}
+    <header className="bg-[var(--color-surface)] border-b border-[var(--color-border)]">
+      {/* Utility bar — breadcrumb + tools (matches reference top bar) */}
+      <div className="flex items-center gap-3 px-6 py-2.5">
+        <div className="flex items-center gap-1.5 text-[12px]">
+          <span className="text-[var(--color-ink-mute)]">QuickBid</span>
+          <span className="text-[var(--color-ink-faint)]">/</span>
+          <span className="text-[var(--color-ink-mute)]">项目</span>
+          <span className="text-[var(--color-ink-faint)]">/</span>
+          <span className="text-[var(--color-ink)] font-medium">
+            {project.name}
           </span>
-          {project.tender_file_path && (
-            <span className="text-[10px] text-stone truncate">
-              {project.tender_file_path.split("/").pop()}
-            </span>
-          )}
+          <ChevronDown className="w-3.5 h-3.5 text-[var(--color-ink-mute)]" />
+        </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <IconButton label="设置" icon={<Settings className="w-3.5 h-3.5" />} />
+          <IconButton label="浅色" icon={<Sun className="w-3.5 h-3.5" />} />
+          <IconButton label="深色" icon={<Moon className="w-3.5 h-3.5" />} />
+          <button
+            aria-label="导出"
+            className="ml-1.5 flex items-center gap-1.5 px-3 py-1.5 bg-[var(--color-ink-button)] text-[var(--color-paper)] rounded-lg text-[12px] font-medium hover:bg-[var(--color-ink-button-soft)] transition-colors min-h-[32px]"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>导出</span>
+          </button>
         </div>
       </div>
 
-      {/* 视图切换 + 工具按钮 */}
-      <div className="flex items-center gap-1">
+      {/* Main bar — title + view tabs + actions */}
+      <div className="flex items-center gap-4 px-6 py-3 border-t border-[var(--color-border)]">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2.5">
+            <span className="pill-soft" data-state={state}>
+              <span className="dot" />
+              {statusText}
+            </span>
+            {project.tender_file_path && (
+              <span className="text-[11px] text-[var(--color-ink-mute)] font-mono truncate max-w-[280px]">
+                {project.tender_file_path.split("/").pop()}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-1.5">
+            <h1 className="text-[20px] font-semibold text-[var(--color-ink)] leading-none tracking-tight truncate">
+              {project.name}
+            </h1>
+            <button
+              className="w-6 h-6 rounded-md text-[var(--color-ink-mute)] hover:bg-[var(--color-paper-warm)] hover:text-[var(--color-ink)] flex items-center justify-center"
+              aria-label="编辑项目名"
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+
+        {/* View tabs (pill style) */}
         {canShowReport && (
-          <div className="flex border border-border rounded-sm overflow-hidden mr-2">
-            <button
+          <div className="flex p-1 bg-[var(--color-paper-warm)] rounded-xl" role="tablist">
+            <TabBtn
+              active={view === "chat"}
               onClick={() => onViewChange("chat")}
-              className={cn(
-                "px-2.5 py-1 text-[11px] flex items-center gap-1",
-                view === "chat"
-                  ? "bg-ink text-paper"
-                  : "bg-surface text-ink-light hover:text-ink"
-              )}
-              title="对话视图"
-            >
-              <MessageSquare className="w-3 h-3" />
-              对话
-            </button>
-            <button
+              icon={<MessageSquare className="w-3.5 h-3.5" />}
+              label="对话"
+            />
+            <TabBtn
+              active={view === "report"}
               onClick={() => onViewChange("report")}
-              className={cn(
-                "px-2.5 py-1 text-[11px] flex items-center gap-1 border-l border-border",
-                view === "report"
-                  ? "bg-ink text-paper"
-                  : "bg-surface text-ink-light hover:text-ink"
-              )}
-              title="查看解析报告"
-            >
-              <BarChart3 className="w-3 h-3" />
-              报告
-            </button>
+              icon={<BarChart3 className="w-3.5 h-3.5" />}
+              label="报告"
+            />
           </div>
         )}
 
-        {project.status === "parsing" && (
-          <label className="px-3 py-1.5 text-xs bg-ink text-paper rounded-sm cursor-pointer hover:bg-ink-light">
-            {uploading ? "上传中…" : "上传文件"}
-            <input
-              type="file"
-              accept=".pdf,.docx"
-              className="hidden"
-              disabled={uploading}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFile(f);
-              }}
-            />
-          </label>
-        )}
-
-        <button
-          onClick={onClearHistory}
-          title="清空对话历史"
-          className="p-1.5 text-stone hover:text-danger rounded-sm"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        {/* Right actions */}
+        <div className="flex items-center gap-1.5">
+          {project.status === "parsing" && (
+            <label className="btn-primary cursor-pointer" aria-label="上传招标文件">
+              {uploading ? "上传中…" : (
+                <>
+                  <span>↑ 上传招标文件</span>
+                </>
+              )}
+              <input
+                type="file"
+                accept=".pdf,.docx"
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleFile(f);
+                }}
+              />
+            </label>
+          )}
+          <button
+            onClick={onClearHistory}
+            title="清空对话历史"
+            aria-label="清空对话历史"
+            className="w-9 h-9 rounded-lg text-[var(--color-ink-mute)] hover:text-[var(--color-danger)] hover:bg-[var(--color-danger-bg)] flex items-center justify-center transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
-      {err && <span className="text-xs text-danger">{err}</span>}
+      {err && (
+        <div className="px-6 py-2 bg-[var(--color-danger-bg)] border-t border-[var(--color-danger)] text-[12px] text-[var(--color-danger)]">
+          {err}
+        </div>
+      )}
     </header>
+  );
+}
+
+function IconButton({ label, icon }: { label: string; icon: React.ReactNode }) {
+  return (
+    <button
+      aria-label={label}
+      title={label}
+      className="w-8 h-8 rounded-lg text-[var(--color-ink-mute)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] flex items-center justify-center transition-colors"
+    >
+      {icon}
+    </button>
+  );
+}
+
+function TabBtn({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all min-h-[30px]",
+        active
+          ? "bg-[var(--color-surface)] text-[var(--color-ink)] shadow-sm"
+          : "text-[var(--color-ink-mute)] hover:text-[var(--color-ink)]"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

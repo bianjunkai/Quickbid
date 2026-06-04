@@ -1,43 +1,314 @@
-/* QuickBid — Document Studio Design System
-   Warm editorial palette. Not AI. Clean, professional, human.
-   Migrated from web/src/style.css (Vue 3 + Element Plus) */
+/* QuickBid — Warm Soft-Tech Minimalist
+   Inspired by Linear / Perplexity / ChatCore. Cream background, white surfaces,
+   warm orange accent, generous spacing, soft shadows. */
 
 @import "tailwindcss";
 
 @theme inline {
-  /* Warm palette */
-  --color-paper: #fffbeb;
-  --color-ink: #44403c;
-  --color-ink-light: #78716c;
-  --color-stone: #a8a29e;
-  --color-surface: #ffffff;
-  --color-border: #e7e5e4;
-  --color-amber: #d97706;
-  --color-amber-light: #fef3c7;
-  --color-success: #15803d;
-  --color-success-light: #dcfce7;
-  --color-warning: #b45309;
-  --color-danger: #b91c1c;
+  /* ---- Surface ---- */
+  --color-paper: #faf5ee;         /* warm cream main background */
+  --color-paper-warm: #f4ecde;    /* slightly darker */
+  --color-surface: #ffffff;       /* card / panel */
+  --color-surface-sunk: #fbf8f1;  /* nested surface */
 
-  --font-display: 'Cormorant Garamond', Georgia, serif;
-  --font-body: 'Public Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  /* ---- Ink (warm dark text) ---- */
+  --color-ink: #1c1917;           /* primary text — near-black warm */
+  --color-ink-soft: #57534e;      /* body / secondary */
+  --color-ink-mute: #a8a29e;      /* hint / disabled */
+  --color-ink-faint: #d6d3d1;     /* faint divider */
+
+  /* ---- Primary (warm orange/amber) ---- */
+  --color-primary: #d97706;       /* main action — amber-600 */
+  --color-primary-deep: #b45309;  /* hover */
+  --color-primary-soft: #fbbf24;  /* light accent */
+  --color-primary-bg: #fff7ed;    /* ultra soft bg */
+  --color-primary-tint: #fed7aa;  /* tint */
+
+  /* ---- Secondary (deeper ink) ---- */
+  --color-ink-button: #1c1917;    /* dark button bg (NEW PROJECT etc) */
+  --color-ink-button-soft: #44403c; /* hover */
+
+  /* ---- Status ---- */
+  --color-success: #16a34a;
+  --color-success-bg: #f0fdf4;
+  --color-warning: #d97706;
+  --color-warning-bg: #fffbeb;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f2;
+  --color-info: #0ea5e9;
+  --color-info-bg: #f0f9ff;
+
+  /* ---- Lines ---- */
+  --color-border: #e7e5e4;
+  --color-border-soft: #f0ede7;
+
+  /* ---- Fonts ---- */
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
 
-body {
+html, body {
   margin: 0;
   font-family: var(--font-body);
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.55;
   color: var(--color-ink);
   background: var(--color-paper);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
 }
 
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-stone); border-radius: 2px; }
+body, button, input, textarea, select {
+  font-variant-numeric: tabular-nums;
+}
 
-::selection { background: var(--color-amber-light); color: var(--color-ink); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
+
+::selection { background: var(--color-primary-tint); color: var(--color-ink); }
+
+/* ============================================================
+   Utility classes — Soft SaaS
+   ============================================================ */
+
+/* Dot grid background (reference image style) */
+.bg-dotgrid {
+  background-color: var(--color-paper);
+  background-image: radial-gradient(circle, rgba(28, 25, 23, 0.08) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+/* Card surface (white with soft shadow) */
+.card-soft {
+  background: var(--color-surface);
+  border-radius: 16px;
+  box-shadow:
+    0 1px 2px rgba(28, 25, 23, 0.04),
+    0 4px 16px rgba(28, 25, 23, 0.04);
+}
+
+/* Nested card */
+.card-nested {
+  background: var(--color-surface-sunk);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+/* Pill (small chip / button) */
+.pill-soft {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-soft);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  line-height: 1.4;
+}
+.pill-soft .dot { width: 6px; height: 6px; border-radius: 50%; }
+.pill-soft[data-state="parsing"] { color: var(--color-warning); border-color: var(--color-warning); }
+.pill-soft[data-state="parsing"] .dot { background: var(--color-warning); box-shadow: 0 0 0 3px var(--color-warning-bg); }
+.pill-soft[data-state="parsed"] { color: var(--color-success); border-color: var(--color-success); }
+.pill-soft[data-state="parsed"] .dot { background: var(--color-success); }
+.pill-soft[data-state="done"] { color: var(--color-success); border-color: var(--color-success); }
+.pill-soft[data-state="done"] .dot { background: var(--color-success); }
+.pill-soft[data-state="error"] { color: var(--color-danger); border-color: var(--color-danger); }
+.pill-soft[data-state="error"] .dot { background: var(--color-danger); }
+
+/* Section header — small uppercase */
+.section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-mute);
+  padding: 0 4px;
+  margin-bottom: 8px;
+}
+.section-label .count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-mute);
+}
+
+/* Primary button (big rounded, like reference) */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: var(--color-ink-button);
+  color: var(--color-paper);
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 150ms ease;
+  min-height: 40px;
+}
+.btn-primary:hover { background: var(--color-ink-button-soft); }
+.btn-primary:active { transform: scale(0.98); }
+
+/* Soft button (rounded, light bg) */
+.btn-soft {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 150ms ease;
+  min-height: 32px;
+}
+.btn-soft:hover { background: var(--color-paper-warm); color: var(--color-ink); border-color: var(--color-ink-faint); }
+
+/* Icon button (icon-only) */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--color-ink-soft);
+  transition: all 150ms ease;
+  background: transparent;
+}
+.btn-icon:hover { background: var(--color-paper-warm); color: var(--color-ink); }
+
+/* Focus ring (visible, 2px primary) */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Tree connector (dashed like reference) */
+.tree-dash .connector {
+  position: relative;
+}
+.tree-dash .connector::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--color-ink-faint);
+}
+
+/* Animation: streaming pulse */
+@keyframes pulse-warm {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(217, 119, 6, 0); }
+}
+.pulse-warm { animation: pulse-warm 1.4s ease-in-out infinite; }
+
+/* Subtle slide-in for new messages */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.slide-up { animation: slide-up 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+/* AI response card (document-style, the main "card" of the reference) */
+.ai-card {
+  background: var(--color-surface);
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow:
+    0 1px 2px rgba(28, 25, 23, 0.03),
+    0 8px 28px rgba(28, 25, 23, 0.05);
+}
+
+/* Code block (language tabs + line numbers) */
+.code-block {
+  background: #1c1917;
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+}
+.code-block .code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.code-block .code-tabs {
+  display: flex;
+  gap: 4px;
+}
+.code-block .code-tab {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  transition: all 150ms;
+}
+.code-block .code-tab[data-active="true"] {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.95);
+}
+.code-block .code-actions { display: flex; gap: 4px; }
+.code-block .code-action {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  transition: all 150ms;
+}
+.code-block .code-action:hover { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.95); }
+.code-block .code-body {
+  padding: 12px 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.85);
+  overflow-x: auto;
+}
+.code-block .code-line {
+  display: flex;
+  padding: 0 16px;
+}
+.code-block .line-no {
+  width: 32px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 16px;
+  color: rgba(255, 255, 255, 0.3);
+  user-select: none;
+}
+.code-block .line-content {
+  flex: 1;
+  white-space: pre;
+}
+
+/* Syntax tokens (light) */
+.tok-key { color: #93c5fd; }
+.tok-fn { color: #fbbf24; }
+.tok-str { color: #fca5a5; }
+.tok-num { color: #d8b4fe; }
+.tok-com { color: #71717a; font-style: italic; }
+
+/* Sidebar upgrade card removed (no premium tier) */
