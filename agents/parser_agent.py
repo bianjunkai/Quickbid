@@ -28,7 +28,11 @@ from agents.bid_parser.pipeline import (
     BidLLMClient,
     full_result_to_k01_k14,
 )
-from agents.bid_parser.schema import K01_K14_MAPPING
+from agents.bid_parser.schema import (
+    K01_K14_MAPPING,
+    k_field_value,
+    make_k_field,
+)
 from agents.bid_parser.pdf_extractor import extract_file_text, get_file_info
 from agents.bid_parser.marker_scanner import extract_pages, scan_markers, summarize_markers
 
@@ -138,11 +142,11 @@ class ParserAgent(BaseAgent):
             # LLM 不可用，降级为 manual
             return self.execute_manual(ctx, file_path)
 
-        # 补充缺失字段
+        # 补充缺失字段：新 shape 下空值/缺失都用 make_k_field 占位
         for i in range(1, 15):
             key = f"K{i:02d}"
-            if key not in k01_k14 or not k01_k14[key]:
-                k01_k14[key] = "未找到"
+            if key not in k01_k14 or k_field_value(k01_k14[key]) is None:
+                k01_k14[key] = make_k_field("未找到", source_page=None)
 
         ctx.parsed_data = k01_k14
         ctx.error = None
@@ -213,18 +217,20 @@ class ParserAgent(BaseAgent):
         hits = scan_markers(pages)
         summary = summarize_markers(hits)
 
-        # 构建基础结果（K01-K14 全为"待提取"）
+        # 构建基础结果（K01-K14 全为"待提取"，用新 shape 占位）
         k01_k14 = {}
         for i in range(1, 15):
             key = f"K{i:02d}"
-            if i <= 2 and ctx.parsed_data:
-                # K01 可能从项目名获取
-                if key == "K01_项目名称":
-                    k01_k14[key] = ctx.parsed_data.get("K01_项目名称") or "待提取"
-                else:
-                    k01_k14[key] = "待提取"
+            if i == 1 and ctx.parsed_data:
+                # K01 可能从项目名获取（兼容旧 shape 与新 shape）
+                project_name = k_field_value(ctx.parsed_data.get("K01_项目名称"))
+                k01_k14[key] = (
+                    make_k_field(project_name, source_page=None)
+                    if project_name
+                    else make_k_field("待提取", source_page=None)
+                )
             else:
-                k01_k14[key] = "待提取"
+                k01_k14[key] = make_k_field("待提取", source_page=None)
 
         output = {
             **k01_k14,
@@ -287,15 +293,19 @@ class ParserAgent(BaseAgent):
         """
         提取 K01-K14：优先用 LLM 直接给的 K-层（阶段 1 新管道）。
         LLM 已经在 FULL_PARSE_SYSTEM prompt 下输出 K01_项目名称/K04_预算金额 等字段。
+        K 字段新 shape：标量 {value, source_page}、数组 {items, source_pages}。
         """
         k = {}
         for i in range(1, 15):
             key = f"K{i:02d}"
             # 找 K-层字段（key 形如 K01_项目名称 / K10_星标项 / K14_演示要求）
             for fk in full_result:
-                if fk.startswith(f"{key}_") and full_result[fk] not in (None, "", []):
+                if fk.startswith(f"{key}_") and k_field_value(full_result[fk]) is not None:
                     k[fk] = full_result[fk]
                     break
+            else:
+                continue
+            # 找到了就不再 fallback（LLM 优先）
         return k
 
     def _resolve_file_path(self, ctx: AgentContext) -> Optional[str]:
@@ -361,26 +371,32 @@ class ParserAgent(BaseAgent):
         无 PDF 路径时的降级处理：返回 ctx 中已有的 parsed_data，
         或返回 mock 数据（保持与旧版兼容）。
         """
-        if ctx.parsed_data and ctx.parsed_data.get("K01_项目名称"):
+        if ctx.parsed_data and k_field_value(ctx.parsed_data.get("K01_项目名称")):
             ctx.error = None
             return {**ctx.parsed_data, "_mode": "context_reuse"}
 
-        # 完全降级 — 返回基础结构
+        # 完全降级 — 返回基础结构（K 字段全部用新 shape 占位）
+        existing = ctx.parsed_data or {}
+        project_name_value = k_field_value(existing.get("K01_项目名称"))
         return {
-            "K01_项目名称": ctx.parsed_data.get("K01_项目名称") if ctx.parsed_data else "待提取",
-            "K02_招标编号": "待提取",
-            "K03_招标人": "待提取",
-            "K04_预算金额": "待提取",
-            "K05_投标截止时间": "待提取",
-            "K06_开标时间": "待提取",
-            "K07_评分标准": "待提取",
-            "K08_技术要求": "待提取",
-            "K09_商务资质要求": "待提取",
-            "K10_星标项": [],
-            "K11_废标条款": [],
-            "K12_章节模板要求": "待提取",
-            "K13_偏离表格式要求": "待提取",
-            "K14_演示要求": "待提取",
+            "K01_项目名称": (
+                make_k_field(project_name_value, source_page=None)
+                if project_name_value
+                else make_k_field("待提取", source_page=None)
+            ),
+            "K02_招标编号": make_k_field("待提取", source_page=None),
+            "K03_招标人": make_k_field("待提取", source_page=None),
+            "K04_预算金额": make_k_field("待提取", source_page=None),
+            "K05_投标截止时间": make_k_field("待提取", source_page=None),
+            "K06_开标时间": make_k_field("待提取", source_page=None),
+            "K07_评分标准": make_k_field("待提取", source_page=None),
+            "K08_技术要求": make_k_field("待提取", source_page=None),
+            "K09_商务资质要求": make_k_field("待提取", source_page=None),
+            "K10_星标项": make_k_field([], source_page=None),
+            "K11_废标条款": make_k_field([], source_page=None),
+            "K12_章节模板要求": make_k_field("待提取", source_page=None),
+            "K13_偏离表格式要求": make_k_field("待提取", source_page=None),
+            "K14_演示要求": make_k_field("待提取", source_page=None),
             "_mode": "fallback",
             "_hint": "未找到 PDF 文件路径。请先创建项目并上传招标文件。",
         }
@@ -417,20 +433,20 @@ class ParserAgent(BaseAgent):
             ctx_error = f"{message} ({type(exception).__name__}: {exception})"
 
         return {
-            "K01_项目名称": "解析失败",
-            "K02_招标编号": "解析失败",
-            "K03_招标人": "解析失败",
-            "K04_预算金额": "解析失败",
-            "K05_投标截止时间": "解析失败",
-            "K06_开标时间": "解析失败",
-            "K07_评分标准": "解析失败",
-            "K08_技术要求": "解析失败",
-            "K09_商务资质要求": "解析失败",
-            "K10_星标项": [],
-            "K11_废标条款": [],
-            "K12_章节模板要求": "解析失败",
-            "K13_偏离表格式要求": "解析失败",
-            "K14_演示要求": "解析失败",
+            "K01_项目名称": make_k_field("解析失败", source_page=None),
+            "K02_招标编号": make_k_field("解析失败", source_page=None),
+            "K03_招标人": make_k_field("解析失败", source_page=None),
+            "K04_预算金额": make_k_field("解析失败", source_page=None),
+            "K05_投标截止时间": make_k_field("解析失败", source_page=None),
+            "K06_开标时间": make_k_field("解析失败", source_page=None),
+            "K07_评分标准": make_k_field("解析失败", source_page=None),
+            "K08_技术要求": make_k_field("解析失败", source_page=None),
+            "K09_商务资质要求": make_k_field("解析失败", source_page=None),
+            "K10_星标项": make_k_field([], source_page=None),
+            "K11_废标条款": make_k_field([], source_page=None),
+            "K12_章节模板要求": make_k_field("解析失败", source_page=None),
+            "K13_偏离表格式要求": make_k_field("解析失败", source_page=None),
+            "K14_演示要求": make_k_field("解析失败", source_page=None),
             "_mode": "error",
             "_error": message,
         }

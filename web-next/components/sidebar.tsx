@@ -12,8 +12,9 @@ import {
   Briefcase,
   Settings,
   ChevronRight,
+  Trash2,
 } from "lucide-react";
-import { listProjects, createProject, type Project } from "@/lib/api";
+import { listProjects, createProject, deleteProject, type Project } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const STATUS_STATE: Record<string, "parsing" | "parsed" | "done" | "error"> = {
@@ -71,6 +72,7 @@ export function Sidebar() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [featuresOpen, setFeaturesOpen] = useState(true);
+  const [deleting, setDeleting] = useState<number | null>(null);
 
   const fetchProjects = async () => {
     try {
@@ -112,6 +114,23 @@ export function Sidebar() {
       setError(e.message);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDelete = async (id: number, name: string) => {
+    if (!confirm(`确定删除项目「${name}」？此操作不可撤销。`)) return;
+    setDeleting(id);
+    try {
+      await deleteProject(id);
+      await fetchProjects();
+      // 如果删除的是当前项目，跳回项目列表
+      if (pathname === `/projects/${id}`) {
+        router.push("/projects");
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -213,11 +232,11 @@ export function Sidebar() {
                             const itemActive = pathname === `/projects/${p.id}`;
                             const state = STATUS_STATE[p.status] || "parsing";
                             return (
-                              <li key={p.id}>
+                              <li key={p.id} className="group flex items-center">
                                 <Link
                                   href={`/projects/${p.id}`}
                                   className={cn(
-                                    "group flex items-center gap-2.5 pl-7 pr-2.5 py-1.5 rounded-lg transition-colors min-h-[32px]",
+                                    "flex-1 flex items-center gap-2.5 pl-7 pr-1 py-1.5 rounded-lg transition-colors min-h-[32px]",
                                     itemActive
                                       ? "bg-[var(--color-primary-bg)]"
                                       : "hover:bg-[var(--color-paper-warm)]"
@@ -243,6 +262,26 @@ export function Sidebar() {
                                     {p.name}
                                   </span>
                                 </Link>
+                                <button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleDelete(p.id, p.name);
+                                  }}
+                                  disabled={deleting === p.id}
+                                  aria-label={`删除项目 ${p.name}`}
+                                  className={cn(
+                                    "shrink-0 w-6 h-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all",
+                                    "text-[var(--color-ink-mute)] hover:text-[var(--color-danger)] hover:bg-red-50",
+                                    deleting === p.id && "opacity-100 pointer-events-none"
+                                  )}
+                                >
+                                  {deleting === p.id ? (
+                                    <span className="w-2.5 h-2.5 border-2 border-[var(--color-ink-mute)] border-t-transparent rounded-full animate-spin" />
+                                  ) : (
+                                    <Trash2 className="w-3 h-3" />
+                                  )}
+                                </button>
                               </li>
                             );
                           })

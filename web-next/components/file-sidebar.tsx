@@ -207,7 +207,40 @@ function ParsedOverview({
   data: any;
   onOpenReport?: () => void;
 }) {
-  const k = (key: string) => data?.[key] ?? data?.base?.[key];
+  // K 字段新 shape：{value, source_page} / {items, source_pages}，
+  // 旧 shape：标量字符串 / 数组 string[]。统一抽出可显示字符串。
+  const readKValue = (raw: any): string => {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      if (Array.isArray(raw.items)) {
+        return raw.items
+          .map((it: any) => (typeof it === "string" ? it : JSON.stringify(it)))
+          .filter(Boolean)
+          .join("；");
+      }
+      if (raw.value === undefined || raw.value === null || raw.value === "") return "";
+      if (Array.isArray(raw.value)) {
+        return raw.value
+          .map((it: any) => (typeof it === "string" ? it : JSON.stringify(it)))
+          .filter(Boolean)
+          .join("；");
+      }
+      return String(raw.value);
+    }
+    if (Array.isArray(raw)) {
+      return raw
+        .map((it: any) => (typeof it === "string" ? it : JSON.stringify(it)))
+        .filter(Boolean)
+        .join("；");
+    }
+    return raw == null ? "" : String(raw);
+  };
+
+  const k = (key: string) => {
+    const raw = data?.[key] ?? data?.base?.[key];
+    if (raw === undefined) return undefined;
+    return readKValue(raw);
+  };
+
   const fields = [
     { label: "项目名称", value: k("K01_project_name") || k("project_name") },
     { label: "招标编号", value: k("K02_tender_no") || k("tender_no") },

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight, Copy, Check, BarChart3, AlertTriangle, FileCode2, Layers } from "lucide-react";
+import { ChevronRight, Copy, Check, BarChart3, AlertTriangle, FileCode2, Layers, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Schema } from "./parser-schema";
 
 const TABS = [
   { id: "k", label: "K01–K14", icon: Layers, num: "01" },
@@ -83,19 +84,74 @@ export function ParserReport({ data }: { data: any }) {
 }
 
 function KFields({ data }: { data: any }) {
+  // K 字段可能两种 shape：
+  //   旧：标量字符串 / 数组 string[]
+  //   新：标量 {value, source_page} / 数组 {items, source_pages}
+  // helper 统一从两种 shape 提取 (value, page, items-with-pages)
+  const readKField = (raw: any) => {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const items = Array.isArray(raw.items) ? raw.items : null;
+      const pages = Array.isArray(raw.source_pages) ? raw.source_pages : [];
+      if (items) {
+        return items
+          .map((it: any, i: number) => ({
+            text: typeof it === "string" ? it : JSON.stringify(it),
+            page: typeof pages[i] === "number" && pages[i] > 0 ? pages[i] : null,
+          }))
+          .filter((x: { text: string }) => x.text);
+      }
+      const value = raw.value;
+      const page = typeof raw.source_page === "number" && raw.source_page > 0 ? raw.source_page : null;
+      if (value === undefined || value === null || value === "") return { kind: "empty" as const };
+      if (Array.isArray(value)) {
+        return {
+          kind: "array" as const,
+          items: value.map((it: any) => ({
+            text: typeof it === "string" ? it : JSON.stringify(it),
+            page: null as number | null,
+          })),
+        };
+      }
+      return { kind: "scalar" as const, text: String(value), page };
+    }
+    if (Array.isArray(raw)) {
+      return {
+        kind: "array" as const,
+        items: raw
+          .map((it: any) => (typeof it === "string" ? it : JSON.stringify(it)))
+          .filter(Boolean)
+          .map((text) => ({ text, page: null as number | null })),
+      };
+    }
+    if (raw === undefined || raw === null || raw === "") return { kind: "empty" as const };
+    return { kind: "scalar" as const, text: String(raw), page: null };
+  };
+
   const kfields = Object.keys(data)
     .filter((k) => /^K\d{2}_/.test(k))
     .sort();
   if (kfields.length === 0) {
     return <Empty text="无 K01-K14 字段" />;
   }
+
+  const PageBadge = ({ page }: { page: number | null }) =>
+    page ? (
+      <span
+        className="inline-flex items-center gap-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-[var(--color-paper-warm)] text-[var(--color-ink-mute)] border border-[var(--color-line)]/60"
+        title={`来源页码 ${page}`}
+      >
+        <FileText className="w-2.5 h-2.5" />
+        P.{page}
+      </span>
+    ) : null;
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       {kfields.map((k) => {
-        const v = data[k];
-        const isArr = Array.isArray(v);
+        const field = readKField(data[k]);
+        const headerPage = field.kind === "scalar" ? field.page : null;
         return (
-          <div key={k} className="card-soft p-4 hover:shadow-md transition-shadow">
+          <div key={k} className="card-soft p-4 hover:shadow-md transition-shadow relative">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="text-[10px] font-mono text-[var(--color-primary)] font-semibold">
                 {k.split("_")[0]}
@@ -103,24 +159,38 @@ function KFields({ data }: { data: any }) {
               <span className="text-[11px] text-[var(--color-ink-mute)] font-mono truncate">
                 {k.split("_").slice(1).join("_")}
               </span>
+              {headerPage && (
+                <span className="ml-auto shrink-0">
+                  <PageBadge page={headerPage} />
+                </span>
+              )}
             </div>
-            {isArr ? (
+            {field.kind === "empty" && (
+              <div className="text-[13.5px] text-[var(--color-ink-mute)] leading-relaxed">—</div>
+            )}
+            {field.kind === "scalar" && (
+              <div className="text-[13.5px] text-[var(--color-ink)] leading-relaxed">
+                {field.text}
+              </div>
+            )}
+            {field.kind === "array" && (
               <div className="flex flex-wrap gap-1.5 mt-2">
-                {v.slice(0, 6).map((item: any, i: number) => (
+                {field.items.slice(0, 6).map((it: { text: string; page: number | null }, i: number) => (
                   <span
                     key={i}
-                    className="text-[11px] px-2 py-0.5 bg-[var(--color-primary-bg)] text-[var(--color-primary-deep)] rounded-full"
+                    className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-[var(--color-primary-bg)] text-[var(--color-primary-deep)] rounded-full"
                   >
-                    {typeof item === "string" ? item.slice(0, 30) : JSON.stringify(item).slice(0, 30)}
+                    <span className="truncate max-w-[200px]">{it.text.slice(0, 30)}</span>
+                    {it.page && (
+                      <span className="inline-flex items-center gap-0.5 text-[9px] font-mono text-[var(--color-ink-mute)] border-l border-[var(--color-primary-deep)]/20 pl-1">
+                        P.{it.page}
+                      </span>
+                    )}
                   </span>
                 ))}
-                {v.length > 6 && (
-                  <span className="text-[11px] text-[var(--color-ink-mute)]">+{v.length - 6}</span>
+                {field.items.length > 6 && (
+                  <span className="text-[11px] text-[var(--color-ink-mute)]">+{field.items.length - 6}</span>
                 )}
-              </div>
-            ) : (
-              <div className="text-[13.5px] text-[var(--color-ink)] leading-relaxed">
-                {String(v ?? "—")}
               </div>
             )}
           </div>
@@ -263,77 +333,6 @@ function Risks({ data }: { data: any }) {
       })}
     </div>
   );
-}
-
-function Schema({ data }: { data: any }) {
-  const modules = [
-    "base",
-    "qualification",
-    "rejection",
-    "scoring",
-    "tech",
-    "commercial",
-    "templates",
-    "logistics",
-  ];
-  const present = modules.filter((m) => data[m]);
-  if (present.length === 0) return <Empty text="无结构化数据" />;
-  return (
-    <div className="space-y-2.5">
-      {present.map((m, i) => (
-        <details key={m} className="card-soft overflow-hidden group">
-          <summary className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--color-paper-warm)] transition-colors list-none">
-            <ChevronRight className="w-3.5 h-3.5 text-[var(--color-ink-mute)] transition-transform group-open:rotate-90" />
-            <span className="text-[12px] font-mono font-semibold text-[var(--color-ink)]">{m}</span>
-            <span className="text-[11px] text-[var(--color-ink-mute)] font-mono">
-              · {Object.keys(data[m]).length} keys
-            </span>
-          </summary>
-          <div className="border-t border-[var(--color-border)] bg-[var(--color-paper-warm)] p-4">
-            <JsonView value={data[m]} />
-          </div>
-        </details>
-      ))}
-    </div>
-  );
-}
-
-function JsonView({ value }: { value: any }) {
-  if (value === null || value === undefined)
-    return <span className="text-[var(--color-ink-mute)] font-mono text-[12px]">null</span>;
-  if (typeof value === "string")
-    return <span className="text-[var(--color-success)] font-mono text-[12.5px]">"{value}"</span>;
-  if (typeof value === "number" || typeof value === "boolean")
-    return <span className="text-[var(--color-primary)] font-mono text-[12.5px] font-semibold">{String(value)}</span>;
-  if (Array.isArray(value)) {
-    return (
-      <div className="space-y-0.5 pl-4 border-l-2 border-[var(--color-border)]">
-        {value.map((v, i) => (
-          <div key={i} className="text-[12.5px] flex items-baseline gap-2">
-            <span className="text-[var(--color-ink-mute)] font-mono text-[10px] shrink-0 w-8 text-right tabular-nums">
-              [{i}]
-            </span>
-            <JsonView value={v} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-  if (typeof value === "object") {
-    return (
-      <div className="space-y-0.5 pl-4 border-l-2 border-[var(--color-border)]">
-        {Object.entries(value).map(([k, v]) => (
-          <div key={k} className="text-[12.5px] flex items-baseline gap-2">
-            <span className="text-[var(--color-ink)] font-mono text-[12px] font-semibold shrink-0">
-              {k}:
-            </span>
-            <JsonView value={v} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return <span className="font-mono">{String(value)}</span>;
 }
 
 function Stat({ label, value, state }: { label: string; value: number | string; state?: "done" | "warning" | "error" }) {

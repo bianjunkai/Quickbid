@@ -5,6 +5,7 @@ MatcherAgent — 材料匹配
 from typing import Any
 
 from agents.base import BaseAgent, AgentContext
+from agents.bid_parser.schema import k_field_value
 
 SYSTEM_PROMPT = """你是投标材料匹配专家。根据招标文件中的章节要求，从材料库中推荐最匹配的文档。
 
@@ -26,7 +27,8 @@ class MatcherAgent(BaseAgent):
     def execute(self, ctx: AgentContext) -> dict[str, Any]:
         """匹配材料。TODO: Phase 4 — 对材料库做 TF-IDF + 语义排序。"""
         parsed = ctx.parsed_data
-        project_name = parsed.get("K01_项目名称", "未知项目")
+        # K 字段新 shape：{value, source_page}，用 k_field_value 拿到字符串
+        project_name = k_field_value(parsed.get("K01_项目名称")) or "未知项目"
 
         chapters = [
             {"chapter": "第一章 公司简介",

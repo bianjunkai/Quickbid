@@ -8,6 +8,7 @@ import json
 import os
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from models import init_db, get_session, Project, Tender, Material
+from models import init_db, get_session, Project, Tender, Material, MaterialUsage
 from orchestrator import Orchestrator
 from agents.bid_parser.pipeline import (
     BidLLMClient,
@@ -67,7 +68,6 @@ app = FastAPI(title="标书制作工具", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -191,6 +191,10 @@ def delete_project(project_id: int):
     project = session.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
+
+    # 清理关联数据：材料使用记录 → 标书 → 项目
+    session.query(MaterialUsage).filter(MaterialUsage.project_id == project_id).delete()
+    session.query(Tender).filter(Tender.project_id == project_id).delete()
     session.delete(project)
     session.commit()
     return {"message": "项目已删除"}
@@ -577,25 +581,10 @@ async def _run_parse_sse(project_id: int, mode: str):
                     q.put(ev)
                 return
 
-            # full / quick 模式 — 流式调用 LLM
+            # full / quick 模式 — 调用 LLM（不流式输出原始 JSON，前端只关心最终结果）
             accumulated_text: list[str] = []
-            text_id = f"llm_{project_id}"
-            # AI SDK Protocol: text-delta 必须用 text-start/text-end 包裹
-            q.put({"data": json.dumps(
-                {"type": "text-start", "id": text_id},
-                ensure_ascii=False,
-            )})
             for delta in pipeline.step2_full_parse_stream(text):
                 accumulated_text.append(delta)
-                # 把每个 token emit 给前端
-                q.put({"data": json.dumps(
-                    {"type": "text-delta", "id": text_id, "delta": delta},
-                    ensure_ascii=False,
-                )})
-            q.put({"data": json.dumps(
-                {"type": "text-end", "id": text_id},
-                ensure_ascii=False,
-            )})
 
             step2_elapsed = round(time.time() - t0, 2)
             full_text = "".join(accumulated_text)
@@ -605,17 +594,27 @@ async def _run_parse_sse(project_id: int, mode: str):
                 q.put(ev)
 
             # 解析 LLM 输出为 dict
-            cleaned = full_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
-                cleaned = re.sub(r"\n?```\s*$", "", cleaned)
-            try:
-                parsed = json.loads(cleaned)
-            except Exception:
-                parsed = None
+            # 鲁棒 JSON 提取：LLM 不带 response_format 后可能输出
+            #   - 纯 JSON
+            #   - ```json\n{...}\n``` fence
+            #   - "Here's the JSON: ... { ... }" 带前缀
+            # _extract_json_object 做括号配对扫描，避开字符串内花括号
+            parsed = _extract_json_object(full_text.strip())
+
+            if not parsed:
+                # 兜底：fence 剥离后重试
+                cleaned = full_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+                    cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+                    parsed = _extract_json_object(cleaned)
 
             if not parsed:
                 for ev in _sse_error_sync("LLM 输出无法解析为 JSON"):
+                    q.put(ev)
+                # 把原文前 300 字符回传前端方便诊断
+                preview = full_text[:300].replace("\n", " ")
+                for ev in _sse_text_sync(f"原始输出片段: {preview}…"):
                     q.put(ev)
                 return
 
@@ -700,6 +699,59 @@ def _sse_tool_sync(tool_name, tool_input, tool_output, message_id=None, tool_cal
         ensure_ascii=False,
     )}
     yield {"data": json.dumps({"type": "finish-step"}, ensure_ascii=False)}
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    """
+    从 LLM 输出里抽第一个完整的 JSON 对象。
+
+    鲁棒处理：前缀文字、markdown fence、字符串内花括号、嵌套结构。
+    顶屋必须是 dict（招标解析 schema 是 object）。
+    """
+    if not text:
+        return None
+    fence = re.search(r"```(?:json)?\s*\n(.*?)\n?```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    start_idx = -1
+    opener, closer = "", ""
+    for i, ch in enumerate(text):
+        if ch == "{":
+            start_idx, opener, closer = i, "{", "}"
+            break
+        if ch == "[":
+            start_idx, opener, closer = i, "[", "]"
+            break
+    if start_idx < 0:
+        return None
+    depth = 0
+    in_string = escape = False
+    for j in range(start_idx, len(text)):
+        c = text[j]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == opener:
+            depth += 1
+        elif c == closer:
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(text[start_idx:j + 1])
+                    if isinstance(obj, dict):
+                        return obj
+                except json.JSONDecodeError:
+                    return None
+                return None
+    return None
 
 
 def _sse_finish_sync():

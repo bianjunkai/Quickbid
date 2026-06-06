@@ -5,6 +5,7 @@ SubBidAgent — 陪标生成
 from typing import Any
 
 from agents.base import BaseAgent, AgentContext
+from agents.bid_parser.schema import k_field_value
 
 SYSTEM_PROMPT = """你是投标文件撰写专家。生成一份独立风格的陪标文件。
 
@@ -25,7 +26,8 @@ class SubBidAgent(BaseAgent):
 
     def execute(self, ctx: AgentContext, fix_issues: dict = None) -> dict[str, Any]:
         """生成陪标。TODO: Phase 4 — 调用 DeepSeek 生成完整陪标。"""
-        project_name = ctx.parsed_data.get("K01_项目名称", "招标项目")
+        # K 字段新 shape：{value, source_page}，用 k_field_value 拿到字符串
+        project_name = k_field_value(ctx.parsed_data.get("K01_项目名称")) or "招标项目"
 
         retry_note = ""
         if fix_issues:

@@ -185,6 +185,91 @@ BID_MODULE_DESCRIPTIONS = {
 }
 
 # ============================================================
+# K01-K14 字段 helper（新 shape：{value|items, source_page|source_pages}）
+# ============================================================
+#
+# 旧 shape：标量是字符串、数组是 string[]
+# 新 shape：{"value": "...", "source_page": 5}
+#          {"items": [...], "source_pages": [12, 15]}
+#
+# 所有 helper 都兼容旧 shape（直接传字符串/数组也能用），
+# 旧数据从 DB 读出来也不会炸。
+
+
+def is_k_field_shaped(field) -> bool:
+    """判断 K 字段是否已经是新 shape（dict 且带 value 或 items）。"""
+    return isinstance(field, dict) and ("value" in field or "items" in field)
+
+
+def k_field_value(field):
+    """提取 K 字段的可显示值（标量返回 str，数组返回 list[str]）。
+
+    空字符串/空数组/None 统一返回 None。
+    """
+    if isinstance(field, dict):
+        if "value" in field:
+            v = field["value"]
+        elif "items" in field:
+            v = field["items"]
+        else:
+            v = None
+    else:
+        v = field
+    if v in (None, "", []):
+        return None
+    return v
+
+
+def k_field_page(field) -> int | None:
+    """提取 K 字段的来源页码。
+
+    标量：取 source_page。数组：取 source_pages[0]（数组整体的大致首页）。
+    无法确定时返回 None。
+    """
+    if not isinstance(field, dict):
+        return None
+    sp = field.get("source_page")
+    if isinstance(sp, int) and sp > 0:
+        return sp
+    sps = field.get("source_pages")
+    if isinstance(sps, list):
+        for p in sps:
+            if isinstance(p, int) and p > 0:
+                return p
+    return None
+
+
+def k_field_items_with_pages(field) -> list[tuple[str, int | None]]:
+    """提取数组型 K 字段的 (item, page) 列表。pages 缺失处用 None 占位。"""
+    if isinstance(field, dict):
+        items = field.get("items") or []
+        pages = field.get("source_pages") or []
+    elif isinstance(field, list):
+        items = field
+        pages = []
+    else:
+        return []
+    out = []
+    for i, item in enumerate(items):
+        page = pages[i] if i < len(pages) else None
+        if not isinstance(page, int) or page <= 0:
+            page = None
+        out.append((item, page))
+    return out
+
+
+def make_k_field(value, source_page: int | None = None):
+    """构造新 shape 的 K 字段。数组用 source_pages，标量用 source_page。"""
+    if isinstance(value, list):
+        if source_page:
+            return {"items": list(value), "source_pages": [source_page] * len(value)}
+        return {"items": list(value), "source_pages": []}
+    if source_page:
+        return {"value": value, "source_page": source_page}
+    return {"value": value, "source_page": None}
+
+
+# ============================================================
 # 辅助：K01-K14 格式化函数
 # ============================================================
 

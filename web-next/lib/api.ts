@@ -1,5 +1,10 @@
 // QuickBid API client — fetch wrapper
-// 后端：FastAPI @ :8000（开发时由 next.config.ts 代理到 /api/*）
+// 后端：FastAPI @ :8000
+// 开发时：NEXT_PUBLIC_API_BASE=http://localhost:8000（直连，避免 Next.js 代理缓冲 SSE）
+// 生产时：不设 NEXT_PUBLIC_API_BASE，走同源（由 nginx 等反向代理转发）
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+export const apiBase = API_BASE;
 
 export interface Project {
   id: number;
@@ -44,11 +49,19 @@ class ApiError extends Error {
   }
 }
 
+function apiPath(path: string) {
+  // 直连后端时需要剥掉 /api 前缀（后端路由没有 /api，之前由 Next.js rewrites 负责剥离）
+  if (API_BASE && path.startsWith("/api/")) {
+    return `${API_BASE}${path.slice(4)}`;
+  }
+  return `${API_BASE}${path}`;
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(apiPath(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -88,7 +101,7 @@ export const deleteProject = (id: number) =>
 export const uploadTender = (id: number, file: File) => {
   const form = new FormData();
   form.append("file", file);
-  return fetch(`/api/projects/${id}/upload`, {
+  return fetch(apiPath(`/api/projects/${id}/upload`), {
     method: "POST",
     body: form,
     // 不要设置 Content-Type — 浏览器会自动生成 multipart boundary

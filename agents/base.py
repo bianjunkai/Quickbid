@@ -22,6 +22,9 @@ class AgentContext:
     # 解析产物
     parsed_data: dict[str, Any] = field(default_factory=dict)
 
+    # 多轮对话历史（Q&A agent 使用，AI SDK 格式 → 转 OpenAI 后传给 LLM）
+    chat_messages: list[dict[str, Any]] = field(default_factory=list)
+
     # 用户确认/修正后的数据
     confirmed_data: dict[str, Any] = field(default_factory=dict)
 

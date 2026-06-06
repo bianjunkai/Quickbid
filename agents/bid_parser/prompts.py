@@ -266,23 +266,27 @@ def validation_messages(
 
 QUICK_EXTRACTION_SYSTEM = """你是招标文件分析专家。请从以下招标文件内容中提取关键信息。
 
-返回严格的 JSON 格式，包含以下字段：
-- K01_项目名称: string
-- K02_招标编号: string
-- K03_招标人: string
-- K04_预算金额: string (含单位)
-- K05_投标截止时间: string (ISO 8601)
-- K06_开标时间: string (ISO 8601)
-- K07_评分标准: string (简要概括评分方法、权重、主要维度)
-- K08_技术要求: string (简要概括涉及的系统模块和技术栈)
-- K09_商务资质要求: string (列出关键资质/业绩/人员/财务要求)
-- K10_星标项: string[] (带★▲等标记的关键条款，逐条列出)
-- K11_废标条款: string[] (所有可能导致废标的条款，逐条列出)
-- K12_章节模板要求: string (标书应包含的章节清单)
-- K13_偏离表格式要求: string (格式/份数/装订等要求)
-- K14_演示要求: string (是否需要演示、时长、形式)
+返回严格的 JSON 格式。每个字段都是对象，标量字段用 {value, source_page}，数组字段用 {items, source_pages}：
+- K01_项目名称: {"value": "<项目全称>", "source_page": <该字段出现的页码 int|null>}
+- K02_招标编号: {"value": "<招标/项目编号>", "source_page": <页码 int|null>}
+- K03_招标人: {"value": "<招标人/采购人名称>", "source_page": <页码 int|null>}
+- K04_预算金额: {"value": "<含单位如'165万元'>", "source_page": <页码 int|null>}
+- K05_投标截止时间: {"value": "<ISO 8601 或原文表述>", "source_page": <页码 int|null>}
+- K06_开标时间: {"value": "<ISO 8601 或原文表述>", "source_page": <页码 int|null>}
+- K07_评分标准: {"value": "<简述评标方法与权重>", "source_page": <页码 int|null>}
+- K08_技术要求: {"value": "<简述主要技术需求>", "source_page": <页码 int|null>}
+- K09_商务资质要求: {"value": "<列出关键资质/业绩/人员/财务要求>", "source_page": <页码 int|null>}
+- K10_星标项: {"items": ["<条款1>", "<条款2>", ...], "source_pages": [<每条对应页码 int|null>, ...]}
+- K11_废标条款: {"items": ["<条款1>", "<条款2>", ...], "source_pages": [<每条对应页码 int|null>, ...]}
+- K12_章节模板要求: {"value": "<投标文件应包含的章节清单>", "source_page": <页码 int|null>}
+- K13_偏离表格式要求: {"value": "<描述正本/副本/电子版/装订要求>", "source_page": <页码 int|null>}
+- K14_演示要求: {"value": "<是否需要演示、时长、形式>", "source_page": <页码 int|null>}
 
-如果某字段在文件中未找到，请填写"未找到"。仅返回 JSON，不要有其他文字。"""
+- source_page / source_pages 的来源：文档中每页会被标记为 [PAGE: N]，请据此定位。
+- 无法确定页码时填 null，不要瞎猜。
+- K10/K11 是数组：items 与 source_pages 长度要一致；同一页有多个条款时该页码可以重复。
+如果某字段在文件中未找到，请把 value 填为"未找到"（数组则 items 为空数组、source_pages 为空数组）。
+仅返回 JSON，不要有其他文字。"""
 
 
 def quick_extraction_messages(full_text: str) -> list[dict]:
@@ -332,21 +336,21 @@ FULL_PARSE_SYSTEM = """你是招标文件解析专家。给定完整招标文件
 ## 输出 JSON Schema
 
 {
-  // ── K01-K14 用户友好层（精炼字符串/数组，给 UI 展示用）──
-  "K01_项目名称": "string, 项目全称，未找到填'未找到'",
-  "K02_招标编号": "string, 招标/项目编号",
-  "K03_招标人": "string, 招标人/采购人名称",
-  "K04_预算金额": "string, 含单位如'165万元'，未找到填'未找到'",
-  "K05_投标截止时间": "string, ISO 8601 或原文表述",
-  "K06_开标时间": "string, ISO 8601 或原文表述",
-  "K07_评分标准": "string, 简述评标方法与权重（例：综合评分法 价格30% 技术50% 商务20%）",
-  "K08_技术要求": "string, 简述主要技术需求（模块/性能/集成）",
-  "K09_商务资质要求": "string, 列出关键资质/业绩/人员/财务要求",
-  "K10_星标项": ["string", ...],  // 带★/▲等关键标记的条款，逐条列出
-  "K11_废标条款": ["string", ...],  // 所有可能导致废标的条款，逐条列出
-  "K12_章节模板要求": "string, 投标文件应包含的章节清单",
-  "K13_偏离表格式要求": "string, 描述正本/副本/电子版/装订要求",
-  "K14_演示要求": "string, 是否需要演示、时长、形式",
+  // ── K01-K14 用户友好层（精炼给 UI 展示用，标量 {value, source_page}，数组 {items, source_pages}）──
+  "K01_项目名称": {"value": "<项目全称，未找到填'未找到'>", "source_page": <int|null, 来源页码>},
+  "K02_招标编号": {"value": "<招标/项目编号>", "source_page": <int|null>},
+  "K03_招标人": {"value": "<招标人/采购人名称>", "source_page": <int|null>},
+  "K04_预算金额": {"value": "<含单位如'165万元'，未找到填'未找到'>", "source_page": <int|null>},
+  "K05_投标截止时间": {"value": "<ISO 8601 或原文表述>", "source_page": <int|null>},
+  "K06_开标时间": {"value": "<ISO 8601 或原文表述>", "source_page": <int|null>},
+  "K07_评分标准": {"value": "<简述评标方法与权重>", "source_page": <int|null>},
+  "K08_技术要求": {"value": "<简述主要技术需求>", "source_page": <int|null>},
+  "K09_商务资质要求": {"value": "<列出关键资质/业绩/人员/财务要求>", "source_page": <int|null>},
+  "K10_星标项": {"items": ["<条款1>", "<条款2>", ...], "source_pages": [<每条对应页码 int|null>, ...]},
+  "K11_废标条款": {"items": ["<条款1>", "<条款2>", ...], "source_pages": [<每条对应页码 int|null>, ...]},
+  "K12_章节模板要求": {"value": "<投标文件应包含的章节清单>", "source_page": <int|null>},
+  "K13_偏离表格式要求": {"value": "<描述正本/副本/电子版/装订要求>", "source_page": <int|null>},
+  "K14_演示要求": {"value": "<是否需要演示、时长、形式>", "source_page": <int|null>},
 
   // ── 8 个结构化模块（机器可读，下游 Agent 使用）──
   "base": {
@@ -499,13 +503,14 @@ FULL_PARSE_SYSTEM = """你是招标文件解析专家。给定完整招标文件
 
 ## 关键原则
 
-1. **K 层是给用户看的精炼版**（字符串/数组），模块层是机器可读的结构化数据。两者信息一致但表达粒度不同。
-2. **数字字段必须是 JSON number**，不要带"元"/"万元"等单位。例：`budget.amount = 1650000`，不是 "165万"。
-3. **找不到信息时**：K 字段填"未找到"，模块字段填 null 或空数组/空对象。
-4. **绝不编造**：原文中没有的信息不要补全。如果只有部分信息能确定，其他字段填 null。
-5. **标记抽取尽量穷尽**：原文中每个 ★/▲/●/◆ 等符号对应的条款都要在 marker_extractions 对应优先级数组里出现。
-6. **跨章推理**：K04 字符串与 base.budget.amount 应该一致；K05 与 logistics.bid_submission.deadline 应该一致。
-7. **输出必须是合法 JSON**，放在 ```json 代码块中或直接输出。
+1. **K 层是给用户看的精炼版**（{value, source_page} / {items, source_pages}），模块层是机器可读的结构化数据。两者信息一致但表达粒度不同。
+2. **K 层的 source_page** 来源是用户原文中的 [PAGE: N] 标记。无法确定时填 null；不要瞎猜。K10/K11 数组里 items 与 source_pages 长度必须一致（页码可以为 null）。
+3. **数字字段必须是 JSON number**，不要带"元"/"万元"等单位。例：`budget.amount = 1650000`，不是 "165万"。
+4. **找不到信息时**：K 字段填"未找到"，模块字段填 null 或空数组/空对象。
+5. **绝不编造**：原文中没有的信息不要补全。如果只有部分信息能确定，其他字段填 null。
+6. **标记抽取尽量穷尽**：原文中每个 ★/▲/●/◆ 等符号对应的条款都要在 marker_extractions 对应优先级数组里出现。
+7. **跨章推理**：K04 value 与 base.budget.amount 应该一致；K05 与 logistics.bid_submission.deadline 应该一致。
+8. **输出必须是合法 JSON**，放在 ```json 代码块中或直接输出。
 """
 
 

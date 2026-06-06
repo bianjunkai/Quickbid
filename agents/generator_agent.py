@@ -5,6 +5,7 @@ GeneratorAgent — 标书初稿生成
 from typing import Any
 
 from agents.base import BaseAgent, AgentContext
+from agents.bid_parser.schema import k_field_value
 
 SYSTEM_PROMPT = """你是医疗信息化标书撰写专家。根据以下材料内容撰写专业标书章节。
 
@@ -27,7 +28,8 @@ class GeneratorAgent(BaseAgent):
 
     def execute(self, ctx: AgentContext) -> dict[str, Any]:
         """生成标书初稿。TODO: Phase 4 — 调用 DeepSeek 生成完整标书。"""
-        project_name = ctx.parsed_data.get("K01_项目名称", "招标项目")
+        # K 字段新 shape：{value, source_page}，用 k_field_value 拿到字符串
+        project_name = k_field_value(ctx.parsed_data.get("K01_项目名称")) or "招标项目"
         chapters = ctx.chapters
 
         # 构建章节预览

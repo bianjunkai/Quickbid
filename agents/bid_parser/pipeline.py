@@ -14,8 +14,10 @@ LLM 调用策略：每次调用聚焦单个任务，temperature=0.0。
 """
 
 import json
+import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
@@ -32,6 +34,7 @@ from agents.bid_parser.schema import (
     _format_templates,
     _format_deviation,
     _format_presentation,
+    make_k_field,
 )
 from agents.bid_parser.pdf_extractor import (
     extract_file_text,
@@ -172,6 +175,8 @@ class BidLLMClient:
             kwargs["response_format"] = response_format
 
         try:
+            t0 = time.time()
+            chunk_count = 0
             stream = client.chat.completions.create(**kwargs)
             for chunk in stream:
                 if not chunk.choices:
@@ -179,9 +184,21 @@ class BidLLMClient:
                 delta = chunk.choices[0].delta
                 content = getattr(delta, "content", None)
                 if content:
+                    chunk_count += 1
+                    # 诊断日志：前 3 个 chunk + 每 100 个打一个
+                    if chunk_count <= 3 or chunk_count % 100 == 0:
+                        logging.getLogger(__name__).info(
+                            "[stream] #%d +%.2fs len=%d: %r",
+                            chunk_count, time.time() - t0, len(content), content[:60],
+                        )
                     yield content
+            logging.getLogger(__name__).info(
+                "[stream] done: total %d chunks in %.2fs",
+                chunk_count, time.time() - t0,
+            )
         except Exception as e:
             # 流式失败：把错误作为最后一段文本抛出
+            logging.getLogger(__name__).error("[stream] error: %s", e)
             yield f"\n\n[STREAM_ERROR] {type(e).__name__}: {e}"
 
     def chat_json(
@@ -217,6 +234,78 @@ class BidLLMClient:
         except json.JSONDecodeError:
             # 尝试修复常见问题
             return None
+
+    def chat_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str | dict = "auto",
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> Optional[dict]:
+        """
+        调用 LLM 并支持 tool-use（OpenAI 兼容协议）。
+
+        Args:
+            messages: OpenAI 格式消息列表（支持 assistant 消息携带 tool_calls、
+                       以及 role="tool" 的工具执行结果消息）
+            tools: OpenAI 风格的 tools 列表，每项形如：
+                   {"type": "function", "function": {"name": ..., "description": ...,
+                    "parameters": <JSON Schema dict>}}
+            tool_choice: "auto" / "none" / {"type": "function", "function": {"name": ...}}
+            temperature: 采样温度
+            max_tokens: 最大输出 token 数
+
+        Returns:
+            {
+              "content": str | None,
+              "tool_calls": [
+                {"id": str, "name": str, "arguments": dict}, ...
+              ] | None,
+              "finish_reason": str,
+            }
+            若 LLM 不可用返回 None
+        """
+        if not self.is_available:
+            return None
+
+        client = self._get_client()
+        if client is None:
+            return None
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}", "content": None, "tool_calls": None}
+
+        msg = response.choices[0].message
+        tool_calls = None
+        if msg.tool_calls:
+            tool_calls = []
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except (json.JSONDecodeError, AttributeError):
+                    args = {}
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": args,
+                    }
+                )
+        return {
+            "content": msg.content,
+            "tool_calls": tool_calls,
+            "finish_reason": response.choices[0].finish_reason,
+        }
 
 
 # ============================================================
@@ -313,6 +402,12 @@ class BidParsePipeline:
         适用于 SSE 端点 — 前端可看到 LLM 真正在生成 token，
         而非面对 65 秒黑屏。
 
+        注意：streaming 调用**不传 response_format**。DeepSeek / OpenAI 兼容 API 在
+        streaming + json_object 组合下会等完整响应生成完才返回 chunk（不是真正的
+        逐 token 流），前端 SSE 看着就像"黑屏 N 秒 + 一次全有"。我们的 system
+        prompt 已经强制要求 JSON 输出（且 JSON 会被 markdown fence 包起来），
+        流完后由调用方剥 fence + json.loads 兜底，错误情况下返回 None。
+
         Yields:
             LLM 输出的 JSON 文本片段（不解析，留给调用方处理）
         """
@@ -323,7 +418,6 @@ class BidParsePipeline:
         messages = full_parse_messages(full_text)
         for tok in self.llm.chat_stream(
             messages, temperature=0.0, max_tokens=16384,
-            response_format={"type": "json_object"},
         ):
             yield tok
 
@@ -798,6 +892,10 @@ def full_result_to_k01_k14(full_result: dict) -> dict:
     将完整解析结果映射为 K01-K14 兼容格式。
 
     供 ParserAgent 在 execute() 返回时使用，保持与 Orchestrator 的向后兼容。
+
+    注意：fallback 路径下 8 个结构化模块本身不带 source_page，所以这里产出的 K 字段
+    page 为 null。K 层带 source_page 的来源是 LLM 在 FULL_PARSE_SYSTEM / QUICK_EXTRACTION_SYSTEM
+    prompt 下直接返回的 K 字段，那是更优路径。
     """
     k01_k14 = {}
 
@@ -836,6 +934,8 @@ def full_result_to_k01_k14(full_result: dict) -> dict:
         if value is None or value == "" or value == []:
             value = "未找到"
 
-        k01_k14[key] = value
+        # 包装成新 shape：标量/数组分别用 value|items + source_page|source_pages
+        # page 在 fallback 路径下为 None
+        k01_k14[key] = make_k_field(value, source_page=None)
 
     return k01_k14

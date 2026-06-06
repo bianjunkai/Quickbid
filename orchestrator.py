@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agents.base import AgentContext
+from agents.bid_parser.schema import k_field_value
 from agents.parser_agent import ParserAgent
 from agents.matcher_agent import MatcherAgent
 from agents.generator_agent import GeneratorAgent
 from agents.reviewer_agent import ReviewerAgent
 from agents.subbid_agent import SubBidAgent
+from agents.qa_agent import QAAgent
 from models import init_db, get_session, Project, Tender
 
 
@@ -59,6 +61,7 @@ class Orchestrator:
             "generator": GeneratorAgent(),
             "reviewer": ReviewerAgent(),
             "subbid": SubBidAgent(),
+            "qa": QAAgent(self.config),
         }
 
         # 尝试恢复会话
@@ -107,14 +110,16 @@ class Orchestrator:
             return {"error": "项目不存在"}
 
         # Step 1: 解析
-        self.ctx.parsed_data["K01_项目名称"] = project.name
+        # 用新 shape 写入 K01，方便下游用 k_field_value() 拿到字符串
+        self.ctx.parsed_data["K01_项目名称"] = {"value": project.name, "source_page": None}
         parse_result = self.agents["parser"].execute(self.ctx)
         parsed_data = parse_result
 
         # 持久化解析结果
         project.parsed_data = json.dumps(parsed_data, ensure_ascii=False)
-        project.project_name = parsed_data.get("K01_项目名称")
-        project.tender_no = parsed_data.get("K02_招标编号")
+        # K 字段新 shape：{value|items, source_page|source_pages}，DB 存的是字符串
+        project.project_name = k_field_value(parsed_data.get("K01_项目名称")) or project.name
+        project.tender_no = k_field_value(parsed_data.get("K02_招标编号"))
         project.status = "parsed"
         session.commit()
 
@@ -323,14 +328,16 @@ class Orchestrator:
     def _do_parse(self, project) -> dict[str, Any]:
         self.step = WorkflowStep.PARSING
 
-        self.ctx.parsed_data["K01_项目名称"] = project.name
+        # 用新 shape 写入 K01，方便下游用 k_field_value() 拿到字符串
+        self.ctx.parsed_data["K01_项目名称"] = {"value": project.name, "source_page": None}
         parsed_data = self.agents["parser"].execute(self.ctx)
 
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
         project.parsed_data = json.dumps(parsed_data, ensure_ascii=False)
-        project.project_name = parsed_data.get("K01_项目名称")
-        project.tender_no = parsed_data.get("K02_招标编号")
+        # K 字段新 shape：{value|items, source_page|source_pages}，DB 存的是字符串
+        project.project_name = k_field_value(parsed_data.get("K01_项目名称")) or project.name
+        project.tender_no = k_field_value(parsed_data.get("K02_招标编号"))
         project.status = "parsed"
         session.commit()
 
@@ -338,7 +345,16 @@ class Orchestrator:
 
         lines = ["📋 解析完成！关键信息如下：\n"]
         for k, v in parsed_data.items():
-            lines.append(f"**{k}**：{v}")
+            if k.startswith("_"):
+                continue
+            display = k_field_value(v)
+            if display is None:
+                display = "—"
+            elif isinstance(display, list):
+                display = "；".join(str(x) for x in display)
+            else:
+                display = str(display)
+            lines.append(f"**{k}**：{display}")
         lines.append("\n请确认以上信息是否正确。有错误的请告诉我，例如：「预算金额应该是900万」")
 
         return {"message": "\n".join(lines), "parsed_data": parsed_data}
