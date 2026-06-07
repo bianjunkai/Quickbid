@@ -26,7 +26,26 @@ npm install
 npm run dev                   # http://localhost:3000，API 代理到 :8000（/api/* → :8000/*）
 ```
 
-无测试套件。验证方式：`python -c "from models import init_db; print('OK')"` 和手动端到端测试。
+无测试套件。
+
+### 测试方式
+
+**默认在 Web UI 上手动测试**——同时启后端 + 前端，在浏览器里点。`python -c "..."` 这种脚本只用于代码改动后的快速冒烟，不是"测试"的替代品。
+
+```bash
+# 终端 1：启后端
+source .venv/bin/activate && python main.py        # :8000
+
+# 终端 2：启前端
+cd web-next && npm run dev                          # :3000（/api/* 代理到 :8000）
+
+# 浏览器打开 http://localhost:3000
+```
+
+脚本验证（仅限快速冒烟 / 改 matcher 后的回归）：
+```bash
+python -c "from models import init_db; init_db(); print('OK')"
+```
 
 ## Git 规则
 
