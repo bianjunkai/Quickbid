@@ -4,6 +4,8 @@ import type { UIMessage } from "ai";
 import { Sparkles, User, ChevronRight, Copy, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ParseToolResult } from "./tools/parse-tool-result";
+import { OutlineToolResult } from "./tools/outline-tool-result";
+import { MatchToolResult } from "./tools/match-tool-result";
 import { ToolFallback } from "./tools/tool-fallback";
 
 export function MessageList({
@@ -141,6 +143,12 @@ function ToolPart({
 }) {
   if (toolName === "parseTender") {
     return <ParseToolResult state={state} input={input} output={output} errorText={errorText} />;
+  }
+  if (toolName === "outlineDesign") {
+    return <OutlineToolResult state={state} input={input} output={output} errorText={errorText} />;
+  }
+  if (toolName === "matchMaterials") {
+    return <MatchToolResult state={state} input={input} output={output} errorText={errorText} />;
   }
   return (
     <ToolFallback

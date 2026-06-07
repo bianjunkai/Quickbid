@@ -126,6 +126,14 @@ function ChatView({
       saveMessages(projectId, finalMessages as any).catch((e) => {
         console.error("保存对话历史失败：", e);
       });
+      // 状态可能已切（如 parsed → outline_generating → materials_preparing），
+      // 重拉项目数据以让 composer 的快捷指令跟着变
+      getProject(projectId)
+        .then((p) => {
+          onProjectChange(p);
+          projectRef.current = p;
+        })
+        .catch((e) => console.error("刷新项目状态失败：", e));
     },
     onError: (e) => {
       console.error("chat error:", e);

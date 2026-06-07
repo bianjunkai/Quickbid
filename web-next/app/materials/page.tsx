@@ -8,10 +8,10 @@ import { cn } from "@/lib/utils";
 const CATEGORIES = [
   { key: "", label: "全部" },
   { key: "01_公司资质", label: "公司资质" },
-  { key: "02_技术方案", label: "技术方案" },
-  { key: "03_商务资质", label: "商务资质" },
-  { key: "04_项目业绩", label: "项目业绩" },
-  { key: "05_人员资质", label: "人员资质" },
+  { key: "02_业绩案例", label: "业绩案例" },
+  { key: "03_技术方案", label: "技术方案" },
+  { key: "04_实施方案", label: "实施方案" },
+  { key: "05_商务文件", label: "商务文件" },
   { key: "06_其他", label: "其他" },
 ];
 

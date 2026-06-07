@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 const QUICK_REPLIES: Record<string, string[]> = {
   parsing: ["放好了"],
   parsed: ["继续"],
+  outline_generating: ["继续"],
   materials_preparing: ["继续"],
   draft_ready: ["终审", "导出"],
   reviewing: ["导出"],
