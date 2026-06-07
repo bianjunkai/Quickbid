@@ -25,12 +25,17 @@ class WorkflowStep(str):
     AWAIT_TENDER_FILE = "await_tender_file"
     PARSING = "parsing"
     AWAIT_PARSE_CONFIRM = "await_parse_confirm"
+    AWAIT_OUTLINE_CONFIRM = "await_outline_confirm"
     AWAIT_CHAPTER_CONFIRM = "await_chapter_confirm"
     GENERATING_DRAFT = "generating_draft"
     AWAIT_DRAFT_CONFIRM = "await_draft_confirm"
     AWAIT_REVIEW_ACTION = "await_review_action"
     AWAIT_EXPORT_CONFIRM = "await_export_confirm"
     DONE = "done"
+
+
+# 提纲修改的"接受"快速路径（避免 LLM round-trip 处理"继续"）
+RE_OUTLINE_ACCEPT = r"^继续$|^确认$|^可以$|^好的$|^OK$|^ok$|^没问题$|^看着行$|^行$"
 
 
 class Orchestrator:
@@ -80,6 +85,7 @@ class Orchestrator:
             WorkflowStep.IDLE: self._handle_idle,
             WorkflowStep.AWAIT_TENDER_FILE: self._handle_await_tender_file,
             WorkflowStep.AWAIT_PARSE_CONFIRM: self._handle_await_parse_confirm,
+            WorkflowStep.AWAIT_OUTLINE_CONFIRM: self._handle_await_outline_confirm,
             WorkflowStep.AWAIT_CHAPTER_CONFIRM: self._handle_await_chapter_confirm,
             WorkflowStep.AWAIT_DRAFT_CONFIRM: self._handle_await_draft_confirm,
             WorkflowStep.AWAIT_REVIEW_ACTION: self._handle_await_review_action,
@@ -243,25 +249,125 @@ class Orchestrator:
             response_lines.append("✅ 已修正：\n  " +
                                   ", ".join(f"{k}: {v}" for k, v in corrections.items()))
 
-        project.status = "materials_preparing"
+        project.status = "outline_generating"
         session.commit()
 
-        # 调用 MatcherAgent
-        match_result = self.agents["matcher"].execute(self.ctx)
+        # 调 LLM 生成提纲
+        outline_result = self.agents["matcher"].generate_outline(self.ctx)
+        outline = outline_result.get("outline", [])
+
+        # 持久化（_generated_outline 已在 MatcherAgent 内写入 ctx.parsed_data）
+        project.parsed_data = json.dumps(
+            self.ctx.parsed_data, ensure_ascii=False
+        )
+        session.commit()
+
+        self.step = WorkflowStep.AWAIT_OUTLINE_CONFIRM
+
+        response_lines.append(self._render_outline(outline, intro="📑 标书章节大纲（AI 生成）"))
+
+        return {
+            "message": "\n".join(response_lines),
+            "outline": outline,
+        }
+
+    def _handle_await_outline_confirm(self, msg: str) -> dict[str, Any]:
+        """
+        处理提纲确认/修改。
+
+        接受 → 进入材料匹配（快速正则，不调 LLM）。
+        修改 → MatcherAgent.interpret_outline_command 用 LLM 解析自然语言指令，
+               应用 delete/add/rename/modify_subsection/regenerate。
+        其它 → unknown 消息走纯文本 text-delta。
+        """
+        # 1) 接受（快速路径）
+        if re.search(RE_OUTLINE_ACCEPT, msg.strip(), re.IGNORECASE):
+            return self._start_matching()
+
+        # 2) LLM 解析用户的自然语言修改指令
+        action = self.agents["matcher"].interpret_outline_command(
+            self.ctx.outline, msg
+        )
+        act = action.get("action")
+
+        if act == "accept":
+            return self._start_matching()
+        if act == "unknown":
+            return {"message": action.get("message") or self._outline_help_text()}
+
+        if act == "regenerate":
+            hint = action.get("hint") or msg
+            outline_result = self.agents["matcher"].generate_outline(
+                self.ctx, hint=hint
+            )
+            self.ctx.outline = outline_result.get("outline", [])
+            self.ctx.parsed_data["_generated_outline"] = self.ctx.outline
+        elif act in ("delete", "add", "rename", "modify_subsection"):
+            self._apply_outline_action(action)
+        else:
+            return {"message": self._outline_help_text()}
+
+        # 持久化（_generated_outline 跟着 outline 一起更新；用户确认后
+        # _start_matching 会写 _confirmed_outline）
+        session = get_session()
+        project = session.get(Project, self.ctx.project_id)
+        if project:
+            project.parsed_data = json.dumps(
+                self.ctx.parsed_data, ensure_ascii=False
+            )
+            session.commit()
+
+        # 返回结构化 outline；前端 OutlineToolResult 自动重渲染，
+        # 不再返回 text 形式的完整提纲（避免与 OutlineToolResult 重复）
+        return {"outline": self.ctx.outline}
+
+    def _start_matching(self) -> dict[str, Any]:
+        """用已确认的 outline 调 match_materials，转 AWAIT_CHAPTER_CONFIRM。"""
+        match_result = self.agents["matcher"].match_materials(self.ctx)
         chapters = match_result.get("chapters", [])
+
+        # 标记提纲已确认 + 持久化
+        self.ctx.parsed_data["_confirmed_outline"] = self.ctx.outline
+        session = get_session()
+        project = session.get(Project, self.ctx.project_id)
+        if project:
+            project.parsed_data = json.dumps(
+                self.ctx.parsed_data, ensure_ascii=False
+            )
+            project.status = "materials_preparing"
+            session.commit()
 
         self.step = WorkflowStep.AWAIT_CHAPTER_CONFIRM
 
-        response_lines.append("\n📚 材料匹配结果：")
+        # 检查空材料库
+        empty_warn = ""
+        if not chapters or all(c.get("material_id") is None for c in chapters):
+            empty_warn = "⚠️ 材料库为空，所有章节标记为「需新建」\n\n"
+
+        lines = [empty_warn + "📚 材料匹配结果："]
         for ch in chapters:
-            response_lines.append(
-                f"\n**{ch['chapter']}**\n"
+            score_icon = {"高": "🟢", "中": "🟡", "低": "🔴"}.get(
+                ch.get("match_score", ""), "❓"
+            )
+            lines.append(
+                f"\n{score_icon} **{ch['chapter']}** "
+                f"（{ch.get('category', '')}）\n"
                 f"  → 推荐：{ch['material_title']}\n"
                 f"  → 理由：{ch['reason']}"
             )
-        response_lines.append("\n要说「继续」进入生成，或者告诉我需要换哪个章节")
+            alts = ch.get("alternatives") or []
+            if alts:
+                lines.append(
+                    "  → 备选：" + " / ".join(
+                        a.get("material_title", "") for a in alts
+                    )
+                )
+        lines.append("\n说「继续」进入生成，或者告诉我需要换哪个章节")
 
-        return {"message": "\n".join(response_lines), "chapters": chapters}
+        return {
+            "message": "\n".join(lines),
+            "chapters": chapters,
+        }
 
     def _handle_await_chapter_confirm(self, msg: str) -> dict[str, Any]:
         if re.search(r"继续|确认|可以|好的", msg):
@@ -482,6 +588,110 @@ class Orchestrator:
                 corrections["项目名称"] = m.group(1).strip()
         return corrections
 
+    # ---- 提纲相关辅助 ----
+
+    def _render_outline(self, outline: list[dict[str, Any]],
+                        intro: str = "📑 标书章节大纲") -> str:
+        """渲染提纲到 CLI 字符串。章节数 > 10 时只显示前 10 章 + 省略提示。"""
+        if not outline:
+            return f"{intro}\n（无章节）"
+        lines = [intro]
+        show = outline[:10]
+        for ch in show:
+            no = ch.get("no", "?")
+            title = ch.get("title", "")
+            cat = ch.get("category", "")
+            lines.append(f"\n  第{no}章 {title}（{cat}）")
+            for sub in ch.get("subsections") or []:
+                lines.append(f"    · {sub.get('title', '')}")
+        if len(outline) > 10:
+            lines.append(f"\n  … 还有 {len(outline) - 10} 章未显示")
+        lines.append(
+            "\n说「继续」进入材料匹配。"
+            "\n修改指令：删除第N章 / 加一章 [标题] / 改 [旧] 为 [新] / 重排 / 换"
+        )
+        return "\n".join(lines)
+
+    def _outline_help_text(self) -> str:
+        return ("可以这样告诉我修改：\n"
+                "• 删除第3章 / 把第3章删了\n"
+                "• 加一章「数据迁移方案」\n"
+                "• 把第3章改名为「实施保障」\n"
+                "• 技术方案那章加一个小节「数据迁移」\n"
+                "• 重新生成提纲（再想想）\n"
+                "或者直接说「继续」进入材料匹配")
+
+    def _apply_outline_action(self, action: dict[str, Any]) -> None:
+        """
+        把 LLM 解析出的 action 应用到 in-memory ctx.outline。
+
+        支持：delete / add / rename / modify_subsection。
+        regenerate 由调用方单独处理（要调 LLM）。
+        """
+        outline = list(self.ctx.outline)
+        act = action.get("action")
+
+        if act == "delete":
+            no = int(action["chapter_no"])
+            outline = [ch for ch in outline if ch.get("no") != no]
+
+        elif act == "add":
+            title = action["title"]
+            cat = action.get("category", "06_其他")
+            after = int(action.get("after_chapter_no", len(outline)))
+            after = max(0, min(after, len(outline)))
+            new_chapter = {
+                "id": f"ch{after + 1}",
+                "no": after + 1,
+                "title": title,
+                "category": cat,
+                "subsections": [],
+                "source": "user_added",
+            }
+            outline.insert(after, new_chapter)
+
+        elif act == "rename":
+            no = int(action["chapter_no"])
+            new_title = action.get("new_title", "").strip()
+            if new_title:
+                for ch in outline:
+                    if ch.get("no") == no:
+                        ch["title"] = new_title
+                        break
+
+        elif act == "modify_subsection":
+            no = int(action["chapter_no"])
+            sub_act = action.get("sub_action")
+            sub_title = action.get("subsection_title", "").strip()
+            for ch in outline:
+                if ch.get("no") != no:
+                    continue
+                subs = ch.setdefault("subsections", [])
+                if sub_act == "add" and sub_title:
+                    sub_id = f"{ch.get('id', f'ch{no}')}.{len(subs) + 1}"
+                    subs.append({"id": sub_id, "title": sub_title})
+                elif sub_act == "delete" and sub_title:
+                    ch["subsections"] = [
+                        s for s in subs if s.get("title") != sub_title
+                    ]
+                elif sub_act == "rename" and sub_title:
+                    new_sub_title = action.get("new_subsection_title", sub_title).strip()
+                    for s in subs:
+                        if s.get("title") == sub_title:
+                            s["title"] = new_sub_title
+                            break
+                break
+
+        # 重新编号 + id（任何结构性变化后都要做）
+        for i, ch in enumerate(outline, 1):
+            ch["no"] = i
+            ch["id"] = f"ch{i}"
+            for j, sub in enumerate(ch.get("subsections") or [], 1):
+                sub["id"] = f"ch{i}.{j}"
+
+        self.ctx.outline = outline
+        self.ctx.parsed_data["_generated_outline"] = outline
+
     def _resume_from_last_step(self) -> dict[str, Any]:
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
@@ -490,6 +700,9 @@ class Orchestrator:
                 f"等待上传招标文件：\n`{project.tender_file_path}`\n\n放好后说「放好了」",
             WorkflowStep.AWAIT_PARSE_CONFIRM:
                 "请确认之前的解析结果，或告诉我需要修正的地方",
+            WorkflowStep.AWAIT_OUTLINE_CONFIRM:
+                ("请确认章节大纲，或说「继续」进入材料匹配。\n"
+                 "也可以直接说：把第3章删了 / 加一章「数据迁移」/ 重新生成"),
             WorkflowStep.AWAIT_CHAPTER_CONFIRM:
                 "请确认材料匹配方案，或说「继续」进入生成",
             WorkflowStep.AWAIT_DRAFT_CONFIRM:

@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from models import init_db, get_session, Project, Tender, Material, MaterialUsage
-from orchestrator import Orchestrator
+from orchestrator import Orchestrator, WorkflowStep
 from agents.bid_parser.pipeline import (
     BidLLMClient,
     BidParsePipeline,
@@ -803,35 +803,107 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             yield ev
         return
 
-    # ---- "继续" → match ----
-    if "继续" in msg:
-        session = get_session()
-        project = session.get(Project, project_id)
-        if not project:
-            for ev in _sse_error_sync("项目不存在"):
-                yield ev
-            return
-        for ev in _sse_text_sync("🔍 匹配材料中..."):
+    # ---- "继续" / 其他 → 走 Orchestrator 状态机（关键路径）----
+    # 状态机驱动：AWAIT_PARSE_CONFIRM → generate_outline → AWAIT_OUTLINE_CONFIRM
+    #              AWAIT_OUTLINE_CONFIRM → match_materials → AWAIT_CHAPTER_CONFIRM
+    #              AWAIT_CHAPTER_CONFIRM → generate → AWAIT_DRAFT_CONFIRM
+    # handler 返回 dict 里有 outline / chapters / draft_preview 键就发对应 tool 事件
+    # 上面分支已 return（parse / generate / review / export 走一次性路径），下面就是状态机入口
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        for ev in _sse_error_sync("项目不存在"):
             yield ev
-        orch = Orchestrator(tender_config)
-        orch.ctx.project_id = project_id
-        orch.ctx.parsed_data = json.loads(project.parsed_data) if project.parsed_data else {}
-        match_result = orch.agents["matcher"].execute(orch.ctx)
-        project.status = "materials_preparing"
-        session.commit()
+        return
+
+    # 用 project.status 恢复 orch.step（避免依赖全局 .session.json）
+    status_to_step = {
+        "parsed": WorkflowStep.AWAIT_PARSE_CONFIRM,
+        "outline_generating": WorkflowStep.AWAIT_OUTLINE_CONFIRM,
+        "materials_preparing": WorkflowStep.AWAIT_CHAPTER_CONFIRM,
+        "generating": WorkflowStep.AWAIT_DRAFT_CONFIRM,
+        "reviewing": WorkflowStep.AWAIT_REVIEW_ACTION,
+    }
+
+    orch = Orchestrator(tender_config)
+    # 恢复 ctx
+    orch.ctx.project_id = project_id
+    orch.ctx.parsed_data = json.loads(project.parsed_data) if project.parsed_data else {}
+    # 恢复 outline / chapters from parsed_data
+    outline = (orch.ctx.parsed_data.get("_confirmed_outline")
+               or orch.ctx.parsed_data.get("_generated_outline") or [])
+    if outline:
+        orch.ctx.outline = outline
+    if "chapters" in orch.ctx.parsed_data:
+        orch.ctx.chapters = orch.ctx.parsed_data["chapters"]
+    # 强制设置 step 为当前 project 状态
+    orch.step = status_to_step.get(project.status, WorkflowStep.IDLE)
+
+    # "继续" 状态机的"进入动画"文案
+    if "继续" in msg:
+        if project.status == "parsed":
+            for ev in _sse_text_sync("📑 生成章节大纲中..."):
+                yield ev
+        elif project.status == "outline_generating":
+            for ev in _sse_text_sync("🔍 匹配材料中..."):
+                yield ev
+        elif project.status == "materials_preparing":
+            for ev in _sse_text_sync("📝 生成标书中（多 Agent 串行，可能需要数分钟）..."):
+                yield ev
+
+    # 让 Orchestrator 状态机处理
+    result = orch.handle(msg)
+    message = result.get("message", "")
+
+    # 按返回 dict 的 key 发对应 tool 事件。
+    # 关键：发完 tool 事件后不要再把同一段 message 文本再发一次 text-delta —
+    # 前端的 tool 组件（如 OutlineToolResult）已经渲染了同样的内容，重复发就是 UI 上
+    # 看到两次。
+    emitted_tool = False
+    if "outline" in result and "chapters" not in result:
+        for ev in _sse_tool_sync(
+            "outlineDesign",
+            {"projectId": project_id, "tenderType": "main"},
+            {
+                "outline": result["outline"],
+                "message": message,
+                "action_hint": "说「继续」进入材料匹配；也可以直接告诉我怎么改，比如「把第3章删了」「加一章 数据迁移」「重新生成」",
+            },
+        ):
+            yield ev
+        emitted_tool = True
+    if "chapters" in result and "outline" not in result:
         for ev in _sse_tool_sync(
             "matchMaterials",
             {"projectId": project_id, "tenderType": "main"},
             {
-                "chapters": match_result.get("chapters", []),
-                "message": "材料匹配完成，请确认每章选择。",
+                "chapters": result["chapters"],
+                "message": message,
                 "action_hint": "可以告诉我需要替换哪个章节，或说'继续'进入生成。",
             },
         ):
             yield ev
-        for ev in _sse_finish_sync():
+        emitted_tool = True
+    if "draft_preview" in result:
+        for ev in _sse_tool_sync(
+            "generateTender",
+            {"projectId": project_id, "tenderType": "main"},
+            {
+                "tenderId": result.get("tender_id"),
+                "draft_preview": result["draft_preview"],
+                "message": message,
+            },
+        ):
             yield ev
-        return
+        emitted_tool = True
+
+    # 没有 tool 事件 → 当成纯文本消息（如 help、unknown command）
+    if not emitted_tool and message:
+        for ev in _sse_text_sync(message):
+            yield ev
+    for ev in _sse_finish_sync():
+        yield ev
+    return
 
     # ---- "生成" → generate ----
     if "生成" in msg:
@@ -993,7 +1065,7 @@ async def chat_router(project_id: int, request: Request):
 
 @app.post("/projects/{project_id}/parse/confirm")
 def confirm_parse(project_id: int, req: TenderParseConfirmRequest):
-    """用户确认解析结果，进入材料匹配。"""
+    """用户确认解析结果，一次性生成提纲 + 匹配材料（Web 走一次性路径）。"""
     session = get_session()
     project = session.get(Project, project_id)
     if not project:
@@ -1011,10 +1083,15 @@ def confirm_parse(project_id: int, req: TenderParseConfirmRequest):
     orch.ctx.project_id = project_id
     orch.ctx.parsed_data = json.loads(project.parsed_data) if project.parsed_data else {}
 
+    # 一次性调用（Web 跳过中间确认步骤）
     match_result = orch.agents["matcher"].execute(orch.ctx)
+
+    project.parsed_data = json.dumps(orch.ctx.parsed_data, ensure_ascii=False)
+    session.commit()
 
     return {
         "message": "信息已确认，材料匹配完成",
+        "outline": match_result.get("outline", []),
         "chapters": match_result.get("chapters", []),
         "next_action": "开始主标材料匹配"
     }
@@ -1091,7 +1168,7 @@ def generate_tender(project_id: int, req: GenerateDraftRequest):
 
 @app.get("/projects/{project_id}/match")
 def match_materials(project_id: int, tender_type: str = "main"):
-    """由 MatcherAgent 分析章节并推荐材料。"""
+    """用已确认的提纲做材料匹配（前提：提纲已确认；如未确认则自动生成一份）。"""
     session = get_session()
     project = session.get(Project, project_id)
     if not project:
@@ -1102,7 +1179,15 @@ def match_materials(project_id: int, tender_type: str = "main"):
     orch.ctx.tender_type = tender_type
     orch.ctx.parsed_data = json.loads(project.parsed_data) if project.parsed_data else {}
 
-    match_result = orch.agents["matcher"].execute(orch.ctx)
+    # 兜底：没有 outline 就先生成
+    if not orch.ctx.outline:
+        outline_result = orch.agents["matcher"].generate_outline(orch.ctx)
+        orch.ctx.outline = outline_result.get("outline", [])
+
+    match_result = orch.agents["matcher"].match_materials(orch.ctx)
+
+    project.parsed_data = json.dumps(orch.ctx.parsed_data, ensure_ascii=False)
+    session.commit()
 
     return {
         "message": "材料匹配完成，请确认每章选择：",

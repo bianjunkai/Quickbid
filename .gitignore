@@ -18,6 +18,9 @@ uv.lock
 .DS_Store
 Thumbs.db
 
+# User reference files (not project code)
+UI reference.jpg
+
 # Node
 node_modules/
 .next/

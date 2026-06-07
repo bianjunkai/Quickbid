@@ -28,6 +28,9 @@ class AgentContext:
     # 用户确认/修正后的数据
     confirmed_data: dict[str, Any] = field(default_factory=dict)
 
+    # 标书提纲（章节列表，由 MatcherAgent.generate_outline 生成、用户确认/修改后使用）
+    outline: list[dict[str, Any]] = field(default_factory=list)
+
     # 材料列表
     materials: list[dict[str, Any]] = field(default_factory=list)
 
@@ -54,13 +57,15 @@ class AgentContext:
             "tender_type": self.tender_type,
             "parsed_data": self.parsed_data,
             "confirmed_data": self.confirmed_data,
+            "outline": self.outline,
             "chapters": self.chapters,
             "review_report": self.review_report,
         }
 
     def update_from_dict(self, data: dict) -> None:
         for key in ("project_id", "tender_id", "tender_type",
-                     "parsed_data", "confirmed_data", "chapters", "review_report"):
+                     "parsed_data", "confirmed_data", "outline",
+                     "chapters", "review_report"):
             if key in data:
                 setattr(self, key, data[key])
 

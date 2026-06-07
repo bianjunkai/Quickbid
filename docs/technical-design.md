@@ -116,6 +116,9 @@ Project（投标项目）
 IDLE → AWAIT_TENDER_FILE → PARSING → AWAIT_PARSE_CONFIRM
                                           │
                                           ▼
+                                 AWAIT_OUTLINE_CONFIRM   ← 新增
+                                          │
+                                          ▼
                                  AWAIT_CHAPTER_CONFIRM
                                           │
                                           ▼
@@ -138,8 +141,9 @@ IDLE → AWAIT_TENDER_FILE → PARSING → AWAIT_PARSE_CONFIRM
 | `IDLE` | — | `新建项目：xxx` |
 | `AWAIT_TENDER_FILE` | — | `放好了` |
 | `PARSING` | **ParserAgent** | 自动执行 |
-| `AWAIT_PARSE_CONFIRM` | **MatcherAgent** | `继续` / `预算应该是900万` |
-| `AWAIT_CHAPTER_CONFIRM` | — | `继续` / `换第三章` |
+| `AWAIT_PARSE_CONFIRM` | **MatcherAgent.generate_outline** | `继续` / `预算应该是900万` |
+| `AWAIT_OUTLINE_CONFIRM` | **（用户交互）** | `继续` / `删除第N章` / `加一章 [标题]` / `改 [旧] 为 [新]` / `重排` |
+| `AWAIT_CHAPTER_CONFIRM` | **MatcherAgent.match_materials** | `继续` / `换第三章` |
 | `GENERATING_DRAFT` | **GeneratorAgent** | 自动执行 |
 | `AWAIT_DRAFT_CONFIRM` | **ReviewerAgent** | `终审` / `修改` |
 | `AWAIT_REVIEW_ACTION` | — | `自动修正` / `导出Word` |
