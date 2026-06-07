@@ -15,8 +15,9 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 const SOURCE_LABEL: Record<string, string> = {
   k12: "K12 模板",
+  scoring: "K07 评分项",
   materials: "材料库",
-  llm_inferred: "AI 补充",
+  llm_inferred: "AI 推断",
   fallback: "骨架",
 };
 
