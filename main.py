@@ -610,13 +610,23 @@ async def _run_parse_sse(project_id: int, mode: str):
                     parsed = _extract_json_object(cleaned)
 
             if not parsed:
-                for ev in _sse_error_sync("LLM 输出无法解析为 JSON"):
+                # 流式输出 JSON 截断 / 格式异常 → 兜底走非流式（内置 2 次重试）
+                for ev in _sse_text_sync("⚠️ 流式输出解析失败，自动重试…"):
                     q.put(ev)
-                # 把原文前 300 字符回传前端方便诊断
-                preview = full_text[:300].replace("\n", " ")
-                for ev in _sse_text_sync(f"原始输出片段: {preview}…"):
-                    q.put(ev)
-                return
+                fallback = pipeline.step2_full_parse(text)
+                if fallback and "_error" not in fallback:
+                    parsed = fallback
+                    for ev in _sse_text_sync("✓ 重试成功"):
+                        q.put(ev)
+                else:
+                    err_msg = (fallback or {}).get("_error", "LLM 输出无法解析为 JSON")
+                    for ev in _sse_error_sync(err_msg):
+                        q.put(ev)
+                    # 把原文前 300 字符回传前端方便诊断
+                    preview = full_text[:300].replace("\n", " ")
+                    for ev in _sse_text_sync(f"原始输出片段: {preview}…"):
+                        q.put(ev)
+                    return
 
             # 注入 meta
             parsed.setdefault("meta", {})
