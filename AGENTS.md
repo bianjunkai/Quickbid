@@ -8,8 +8,10 @@ QuickBid is a hospital-IT bid document generator built on a "confirmation-driven
 - `main.py` — FastAPI server (REST + SSE, Vercel AI SDK Data Stream Protocol) consumed by the web frontend.
 - `orchestrator.py` — State machine (`IDLE → AWAIT_TENDER_FILE → ... → DONE`) and Agent dispatcher.
 - `agents/` — Agent implementations. `base.py` defines `BaseAgent` and `AgentContext`; subpackages hold specialized agents (`bid_parser/`, `parser_agent.py`, `matcher_agent.py`, `generator_agent.py`, `reviewer_agent.py`, `subbid_agent.py`).
+  - **MatcherAgent** — Outline design + material matching. Includes `validate_outline()` function for static validation (5 rules: scoring coverage, chapter count, category diversity, K12 compliance, duplicate check).
 - `models.py` — SQLAlchemy models for `Project`, `Tender`, `Material`, `MaterialUsage`. Status and type fields are plain strings, not Enums.
 - `web-next/` — Current Next.js 15 + React 19 + Tailwind 4 + Vercel AI SDK frontend. `web/` is the legacy Vue 3 codebase, kept for reference only.
+  - `components/tools/outline-tool-result.tsx` — Displays outline with validation results (warnings in yellow, errors in red).
 - `materials/` — Material library, six fixed categories (`01_公司资质` ... `06_其他`).
 - `projects/` — One subdirectory per bid project, named `<timestamp>_<name>/`, containing `tender.pdf`.
 - `exports/` — Generated Word/PDF outputs.
@@ -80,4 +82,15 @@ PRs should include: a one-line summary, the affected scope, manual verification 
 - `.env` contains the DeepSeek API key and is git-ignored. Never commit it; use `chmod 600 .env`.
 - API keys are read via `TENDER_DEEPSEEK_API_KEY`; the field `api_key_env` in `config.yaml` controls which env var is consulted.
 - Materials, projects, and exports contain potentially sensitive bid data — keep `.gitkeep` placeholders and do not commit real PDFs.
+
+## Review Workflow
+
+`review/` 目录是代码 review 的存放处。每次**继续工作前**：
+
+1. 读 `review/` 目录里**最新**的 review 文件（按 mtime/文件名排序）
+2. 把它列出的待办中**有价值的、可执行的**部分纳入**当前 session 的工作**——和用户当前请求合并推进
+3. 完成对应条目后，**回到 review 文件**把已完成项**划去**（用 `~~` 包裹 markdown，或把 checkbox 改成 `[x]`）
+4. 跳过的条目保留并在 review 文件里写一行简短的跳过原因（避免下次重复判断）
+
+适用范围：code review、refactor 建议、UX/性能问题等。**只读** review 文件——除非被显式授权，否则不要改 review 的判定标准。
 - `tender.db` (SQLite) is generated locally and ignored; delete it to reset state during development.

@@ -142,4 +142,56 @@ export const createMaterial = (data: {
     body: JSON.stringify(data),
   });
 
+// ---- 标书文件树 / 单文件读取（右侧 FileSidebar + 全屏查看器）----
+
+export interface TenderFileEntry {
+  name: string;
+  path: string;
+  size: number;
+  chapter_no?: number;
+  kind?: string;
+}
+
+export interface TenderFolder {
+  name: string;
+  category: string;
+  category_no: string;
+  path: string;
+  files: TenderFileEntry[];
+}
+
+export interface TenderFileTree {
+  tender_id: number;
+  type: string;
+  root: string;
+  folders: TenderFolder[];
+  top_files: TenderFileEntry[];
+}
+
+export const listTenderFiles = (projectId: number, tenderId: number) =>
+  request<TenderFileTree>(
+    `/api/projects/${projectId}/tenders/${tenderId}/files`
+  );
+
+export async function readTenderFile(
+  projectId: number,
+  tenderId: number,
+  filePath: string
+): Promise<string> {
+  const res = await fetch(
+    apiPath(
+      `/api/projects/${projectId}/tenders/${tenderId}/files/${filePath}`
+    )
+  );
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const data = await res.json();
+      if (data?.detail) msg = String(data.detail);
+    } catch { /* ignore */ }
+    throw new ApiError(res.status, msg);
+  }
+  return res.text();
+}
+
 export { ApiError };

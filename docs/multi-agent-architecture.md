@@ -83,17 +83,26 @@ class BaseAgent(ABC):
 | 工具 | `file_utils.extract_text()` — 读取 PDF/DOCX |
 | 特点 | 只做提取，不做推理。找不到的字段填 "未找到"，由用户人工补充 |
 
-### MatcherAgent — 材料匹配
+### MatcherAgent — 提纲设计 + 材料匹配
 
 | 属性 | 值 |
 |------|-----|
-| 职责 | 将招标文件章节要求与材料库进行智能匹配 |
-| system_prompt | "你是投标材料匹配专家。根据章节要求从材料库中推荐最匹配的文档..." |
+| 职责 | 基于 K01-K14 设计章节大纲，并将章节与材料库进行智能匹配 |
+| system_prompt | "你是医院信息化投标文件的标书结构规划师..." |
 | temperature | 0.1 |
-| 输入 | K12 章节要求 + 材料库列表（title、category、ai_summary、tags） |
-| 输出 | `[{chapter, material_id, material_title, match_score, reason}]` |
-| 工具 | 知识库关键词检索 + 语义相似度排序 |
-| 特点 | 匹配逻辑可独立优化（先关键词过滤 → 再语义排序），不依赖生成 Agent |
+| 输入 | K01-K14 全字段 + scoring_breakdown（评分详细子项）+ 材料库列表 |
+| 输出 | `{outline: [{id, no, title, category, subsections}], chapters: [{chapter_id, material_id, match_score}], validation: {...}}` |
+| 工具 | LLM 生成提纲 + 分类精确匹配 + 关键词子串匹配 |
+| 特点 | **两阶段工作流**：(1) `generate_outline()` — LLM 设计 2 级章节大纲；(2) `match_materials()` — 用确认后的提纲做直接分类匹配。**静态验证**：`validate_outline()` 检查 5 个规则（评分项覆盖度、章节数量合理性、分类多样性、K12 模板遵从、重复检查），返回 warnings/errors。**自然语言修改**：`interpret_outline_command()` 解析用户的修改指令（删除/新增/重命名/修改小节），返回 action 指令由 Orchestrator 执行 |
+
+**提纲验证规则**（Phase 0 新增）：
+1. **评分项覆盖度** — `scoring.dimensions` 中带独立分值的 sub_items 是否在提纲的章节/小节标题中出现
+2. **章节数量合理性** — 一级章节 3-10 个，每章小节 ≤10 个
+3. **分类多样性** — 6 个标准分类至少用了 4 个（避免过度使用 06_其他）
+4. **K12 模板遵从** — 如果 K12 是结构化目录，检查关键章节是否保留
+5. **重复检查** — 章节标题不重复，小节标题不与父章节重复
+
+验证结果包含 `is_valid`（是否有阻塞性错误）、`warnings`（警告列表）、`errors`（错误列表）和 `stats`（统计信息，含评分覆盖率）。前端展示：错误用红色卡片 + 禁用"继续"按钮，警告用黄色卡片但不阻塞流程。
 
 ### GeneratorAgent — 标书生成
 

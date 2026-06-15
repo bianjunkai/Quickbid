@@ -136,7 +136,6 @@ class Orchestrator:
 
         # Step 3: 生成主标
         gen_result = self.agents["generator"].execute(self.ctx)
-        draft_content = gen_result.get("content", "")
 
         # 创建 Tender 记录
         tender = Tender(project_id=project_id, type="main", status="draft")
@@ -144,6 +143,11 @@ class Orchestrator:
         session.commit()
         session.refresh(tender)
         self.ctx.tender_id = tender.id
+
+        # 落盘主标文件 + 落库 draft_path
+        draft_path = self._write_main_tender_files(
+            project, tender, gen_result, self.ctx.parsed_data or {}
+        )
 
         # Step 4: 审查主标
         self.ctx.tender_type = "main"
@@ -479,21 +483,27 @@ class Orchestrator:
         self.ctx.tender_id = tender.id
 
         project = session.get(Project, self.ctx.project_id)
+
+        # 落盘主标文件 + 落库 draft_path
+        draft_path = self._write_main_tender_files(
+            project, tender, gen_result, self.ctx.parsed_data or {}
+        )
         project.status = "generating"
         session.commit()
 
+        chapters = gen_result.get("chapters", [])
         return {
             "message": ("✅ 主标初稿已生成！\n\n"
-                        "**核心亮点：**\n"
-                        "• 基于材料匹配结果拼接\n"
-                        "• 技术方案突出「云架构+微服务」\n"
-                        "• 偏离表已生成，共12项响应\n\n"
-                        "**请注意以下几点：**\n"
-                        "• 第3章工期描述已按招标要求修正\n"
-                        "• 第5章金额已统一\n\n"
-                        "输入「终审」进行检查，或「修改」告诉我需要改的地方。\n"
-                        "如需生成陪标，输入「生成陪标」。"),
+                        f"**已生成 {len(chapters)} 章**，已归档到右侧项目文件面板。\n"
+                        "**下一步：**\n"
+                        "• 「终审」进行检查\n"
+                        "• 「修改 [章节] [内容]」告诉我要改的地方\n"
+                        "• 「生成陪标」生成陪标文件\n"
+                        f"📁 路径：`{draft_path}`"),
             "draft_preview": gen_result.get("content", "")[:500],
+            "draft_path": draft_path,
+            "draft_chapters": chapters,
+            "outline": gen_result.get("outline", []),
             "tender_id": self.ctx.tender_id,
         }
 
@@ -569,6 +579,123 @@ class Orchestrator:
                         "本次项目制作完成！要说「新建项目」开始下一个。"),
             "export_path": str(export_path),
         }
+
+    # ================================================================
+    # 文件落盘（GeneratorAgent 输出 → 真实文件 + tender.draft_path）
+    # ================================================================
+
+    def _write_main_tender_files(
+        self,
+        project,
+        tender,
+        gen_result: dict[str, Any],
+        parsed: dict[str, Any],
+    ) -> str:
+        """把主标生成结果写到 projects/{ts}_{name}/main/ 目录,落库 tender.draft_path。
+
+        落盘结构:
+          main/
+            cover.md              封面+目录
+            draft.md              完整拼装 Markdown
+            deviation.md          偏离表占位
+            <category>/           随 outline 动态生成
+              <no:02d>_<title>.md 单章内容
+        """
+        if not project or not project.tender_file_path:
+            return ""
+        try:
+            project_dir = Path(project.tender_file_path).parent
+            main_dir = project_dir / "main"
+            main_dir.mkdir(parents=True, exist_ok=True)
+
+            chapters = gen_result.get("chapters", []) or []
+            k01 = k_field_value(parsed.get("K01_项目名称")) or project.name
+
+            # 1) cover.md
+            cover_lines = [
+                f"# {k01} — 投标文件（主标）",
+                "",
+                "## 项目信息",
+                "",
+                f"- **项目名称**: {k01}",
+            ]
+            k02 = k_field_value(parsed.get("K02_招标编号"))
+            k03 = k_field_value(parsed.get("K03_招标人"))
+            k05 = k_field_value(parsed.get("K05_投标截止时间"))
+            if k02:
+                cover_lines.append(f"- **招标编号**: {k02}")
+            if k03:
+                cover_lines.append(f"- **招标人**: {k03}")
+            if k05:
+                cover_lines.append(f"- **投标截止时间**: {k05}")
+            cover_lines.extend([
+                "",
+                "## 目录",
+                "",
+            ])
+            for ch in chapters:
+                no = ch.get("no", "?")
+                title = ch.get("title", "")
+                cover_lines.append(f"- 第{no}章 {title}")
+            cover_lines.append("")
+            (main_dir / "cover.md").write_text(
+                "\n".join(cover_lines), encoding="utf-8"
+            )
+
+            # 2) draft.md
+            draft_path = main_dir / "draft.md"
+            draft_path.write_text(
+                gen_result.get("content", "") or "", encoding="utf-8"
+            )
+
+            # 3) 各分类子目录 + 单章文件
+            for ch in chapters:
+                cat = ch.get("category", "06_其他") or "06_其他"
+                cat_dir = main_dir / cat
+                cat_dir.mkdir(parents=True, exist_ok=True)
+                no = ch.get("no", 0)
+                title = ch.get("title", "未命名章节")
+                # 防御性转换：no 可能是非数字字符串（如 "?"）
+                try:
+                    no_int = int(no)
+                except (ValueError, TypeError):
+                    no_int = 0
+                fname = f"{no_int:02d}_{self._sanitize_filename(title)}.md"
+                (cat_dir / fname).write_text(
+                    ch.get("content", "") or "", encoding="utf-8"
+                )
+
+            # 4) deviation.md（占位,DeviationAgent 后续生成）
+            (main_dir / "deviation.md").write_text(
+                "# 商务/技术条款偏离表\n\n"
+                "> 本节由 DeviationAgent 后续生成,占位中。\n"
+                "> 一般会要两套:商务条款偏离表（05_商务文件）+ 技术条款偏离表（03_技术方案）。\n",
+                encoding="utf-8",
+            )
+
+            # 5) 落库
+            session = get_session()
+            t = session.get(Tender, tender.id)
+            if t:
+                t.draft_path = str(draft_path)
+                session.commit()
+
+            return str(draft_path)
+        except Exception as e:
+            # 写文件失败不能阻塞主流程
+            logger.warning("写主标文件失败: %s", e)
+            return ""
+
+    @staticmethod
+    def _sanitize_filename(name: str, max_len: int = 50) -> str:
+        """文件名 sanitize:替换非法字符 + 截断。"""
+        s = re.sub(r'[/\\:*?"<>|\r\n\t]+', "_", name or "")
+        s = s.strip().strip(".")
+        if not s:
+            s = "未命名"
+        if len(s) > max_len:
+            s = s[:max_len]
+        return s
 
     # ================================================================
     # 辅助方法

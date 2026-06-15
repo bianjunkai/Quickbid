@@ -901,6 +901,9 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             {
                 "tenderId": result.get("tender_id"),
                 "draft_preview": result["draft_preview"],
+                "draft_path": result.get("draft_path"),
+                "draft_chapters": result.get("draft_chapters", []),
+                "outline": result.get("outline", []),
                 "message": message,
             },
         ):
@@ -938,6 +941,7 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             {
                 "parsed": result.get("parsed"),
                 "matches": result.get("matches"),
+                "draft": result.get("draft"),
                 "main_review": result.get("main_review"),
                 "message": "标书生成完成",
             },
@@ -1111,26 +1115,44 @@ def confirm_parse(project_id: int, req: TenderParseConfirmRequest):
 
 @app.get("/materials")
 def list_materials(category: Optional[str] = None, keyword: Optional[str] = None):
-    session = get_session()
-    query = session.query(Material).filter(Material.is_deleted == False)
+    """从文件系统加载材料库（不走数据库）"""
+    from agents.matcher_agent import MatcherAgent
+
+    matcher = MatcherAgent()
+    all_materials = matcher._load_materials_from_disk()
+
+    # 过滤
+    filtered = all_materials
     if category:
-        query = query.filter(Material.category == category)
+        filtered = [m for m in filtered if m["category"] == category]
     if keyword:
-        query = query.filter(Material.title.contains(keyword))
-    materials = query.order_by(Material.updated_at.desc()).all()
-    return [
-        {
-            "id": m.id,
-            "title": m.title,
-            "category": m.category,
-            "tags": m.tags,
-            "description": m.description,
-            "char_count": m.char_count,
-            "ai_summary": m.ai_summary,
-            "version": m.version,
-        }
-        for m in materials
-    ]
+        filtered = [m for m in filtered if keyword.lower() in m["title"].lower()]
+
+    # 转换为前端期望的格式 + 读取文件大小
+    result = []
+    for m in filtered:
+        file_path = Path(m["file_path"])
+        char_count = 0
+        if file_path.exists():
+            try:
+                if file_path.suffix.lower() == ".md":
+                    text = file_path.read_text(encoding="utf-8")
+                    char_count = len(text)
+            except:
+                pass
+
+        result.append({
+            "id": hash(m["file_path"]) % 100000,  # 伪 ID（前端需要）
+            "title": m["title"],
+            "category": m["category"],
+            "tags": m.get("tags", ""),
+            "description": f"来自 {file_path.name}",
+            "char_count": char_count,
+            "ai_summary": "",
+            "version": 1,
+        })
+
+    return result
 
 
 @app.post("/materials")
@@ -1170,10 +1192,121 @@ def generate_tender(project_id: int, req: GenerateDraftRequest):
         "message": "标书生成完成",
         "parsed": result.get("parsed"),
         "matches": result.get("matches"),
+        "draft": result.get("draft"),
         "main_review": result.get("main_review"),
         "sub_draft": result.get("sub_draft"),
         "sub_review": result.get("sub_review"),
     }
+
+
+# ---- 标书文件树 / 单文件读取（FileSidebar 用）----
+
+@app.get("/projects/{project_id}/tenders/{tender_id}/files")
+def list_tender_files(project_id: int, tender_id: int):
+    """返回标书文件树（按 outline 的 6 分类聚合），供右侧 FileSidebar 渲染。"""
+    session = get_session()
+    project = session.get(Project, project_id)
+    tender = session.get(Tender, tender_id)
+    if not project or not tender:
+        raise HTTPException(404, "项目或标书不存在")
+    if not tender.draft_path:
+        return {"tender_id": tender_id, "type": tender.type,
+                "root": "", "folders": [], "files": []}
+
+    main_dir = Path(tender.draft_path).parent
+    if not main_dir.exists():
+        return {"tender_id": tender_id, "type": tender.type,
+                "root": str(main_dir), "folders": [], "files": []}
+
+    folders: list[dict] = []
+    top_files: list[dict] = []
+    # 顶层固定文件
+    for fname in ("cover.md", "draft.md", "deviation.md"):
+        fpath = main_dir / fname
+        if fpath.exists():
+            top_files.append({
+                "name": fname,
+                "path": fname,
+                "size": fpath.stat().st_size,
+                "kind": "top",
+            })
+
+    # 分类子目录（01_公司资质 / 02_业绩案例 / ...）
+    for entry in sorted(main_dir.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        # 解析分类编号 + 名称: "01_公司资质" -> ("01", "公司资质")
+        cat_no = ""
+        cat_name = entry.name
+        if "_" in entry.name:
+            prefix, _, rest = entry.name.partition("_")
+            if prefix.isdigit():
+                cat_no = prefix
+                cat_name = rest
+        files = []
+        for f in sorted(entry.iterdir(), key=lambda p: p.name):
+            if f.is_file() and f.suffix == ".md":
+                # 文件名首段数字是 chapter no: "01_xxx.md" -> no=1
+                fname = f.name
+                chap_no = None
+                if "_" in fname:
+                    head = fname.split("_", 1)[0]
+                    if head.isdigit():
+                        chap_no = int(head)
+                files.append({
+                    "name": fname,
+                    "path": f"{entry.name}/{fname}",
+                    "size": f.stat().st_size,
+                    "chapter_no": chap_no,
+                })
+        folders.append({
+            "name": cat_name,
+            "category": entry.name,
+            "category_no": cat_no,
+            "path": entry.name,
+            "files": files,
+        })
+
+    return {
+        "tender_id": tender_id,
+        "type": tender.type,
+        "root": str(main_dir),
+        "folders": folders,
+        "top_files": top_files,
+    }
+
+
+@app.get("/projects/{project_id}/tenders/{tender_id}/files/{file_path:path}")
+def read_tender_file(project_id: int, tender_id: int, file_path: str):
+    """读取单个 .md 文件的原文（Markdown 文本），供全屏查看器渲染。
+
+    路径安全：必须落在 tender.draft_path 父目录内,防止 ../ 越权。
+    """
+    session = get_session()
+    project = session.get(Project, project_id)
+    tender = session.get(Tender, tender_id)
+    if not project or not tender:
+        raise HTTPException(404, "项目或标书不存在")
+    if not tender.draft_path:
+        raise HTTPException(404, "标书未生成文件")
+
+    main_dir = Path(tender.draft_path).parent.resolve()
+    target = (main_dir / file_path).resolve()
+    try:
+        target.relative_to(main_dir)
+    except ValueError:
+        raise HTTPException(403, "路径越界")
+
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, f"文件不存在: {file_path}")
+    if target.suffix.lower() != ".md":
+        raise HTTPException(400, "仅支持 .md 文件")
+
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        target.read_text(encoding="utf-8"),
+        media_type="text/markdown; charset=utf-8",
+    )
 
 
 @app.get("/projects/{project_id}/match")

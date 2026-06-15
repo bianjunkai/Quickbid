@@ -6,8 +6,8 @@ MatcherAgent — 标书提纲设计 + 材料匹配（v3 重构）
   2. match_materials(ctx) — 用确认后的提纲做直接分类匹配，输出章节-材料映射
 
 **材料库假设**（决策记录）：
-  匹配逻辑依赖材料 `category` 和 `title` 字段已按投标文件常用分类预组织。材料上传时，
-  `category` 必须设置为以下 6 个标准分类之一：
+  匹配逻辑依赖材料 `category` 和 `title` 字段已按投标文件常用分类预组织。
+  材料直接从 `materials/` 文件夹读取（不走数据库），文件名即标题，目录即分类：
     01_公司资质, 02_业绩案例, 03_技术方案, 04_实施方案, 05_商务文件, 06_其他
   不做语义相似度搜索（TF-IDF/embedding）—— 那会导致"过度重叠"匹配到不相关材料。
   **直接把材料放到正确的分类**比任何智能匹配都更准。
@@ -20,12 +20,12 @@ MatcherAgent — 标书提纲设计 + 材料匹配（v3 重构）
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from agents.base import BaseAgent, AgentContext
 from agents.bid_parser.pipeline import BidLLMClient
 from agents.bid_parser.schema import k_field_value, k_field_items_with_pages
-from models import Material, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -254,11 +254,19 @@ class MatcherAgent(BaseAgent):
         )
         ctx.error = None
 
+        # 静态验证（Phase 0 - Task 0.1）
+        validation = validate_outline(
+            outline=outline_chapters,
+            scoring=scoring,
+            k12=k_field_value(parsed.get("K12_章节模板要求")),
+        )
+
         return {
             "outline": outline_chapters,
             "total": len(outline_chapters),
             "version": "1.0",
             "source": "fallback" if used_fallback else "llm",
+            "validation": validation,  # 新增验证结果
         }
 
     # ================================================================
@@ -272,29 +280,14 @@ class MatcherAgent(BaseAgent):
             ctx.error = "没有可用的提纲，请先生成并确认提纲"
             return {"chapters": [], "total": 0, "error": ctx.error}
 
-        # 拉取材料库
-        session = get_session()
-        materials = (
-            session.query(Material)
-            .filter(Material.is_deleted == False)
-            .all()
-        )
-        material_dicts = [
-            {
-                "id": m.id,
-                "title": m.title,
-                "category": m.category,
-                "tags": m.tags or "",
-                "ai_summary": m.ai_summary or "",
-            }
-            for m in materials
-        ]
+        # 从文件系统加载材料库（不走数据库）
+        material_dicts = self._load_materials_from_disk()
 
         chapters: list[dict[str, Any]] = []
         for ch in outline:
             matches = self._match_chapter_to_materials(ch, material_dicts)
             primary = matches[0] if matches else {
-                "material_id": None,
+                "file_path": None,
                 "material_title": "无匹配材料",
                 "match_score": "低",
                 "reason": "需新建",
@@ -303,7 +296,7 @@ class MatcherAgent(BaseAgent):
                 "chapter": ch.get("title", ""),
                 "chapter_id": ch.get("id", ""),
                 "category": ch.get("category", ""),
-                "material_id": primary["material_id"],
+                "file_path": primary["file_path"],
                 "material_title": primary["material_title"],
                 "match_score": primary["match_score"],
                 "reason": primary["reason"],
@@ -313,6 +306,52 @@ class MatcherAgent(BaseAgent):
         ctx.chapters = chapters
         ctx.error = None
         return {"chapters": chapters, "total": len(chapters)}
+
+    # ================================================================
+    # 辅助：从文件系统加载材料库
+    # ================================================================
+
+    def _load_materials_from_disk(self) -> list[dict[str, Any]]:
+        """从 materials/ 文件夹加载材料，不走数据库。
+
+        Returns:
+            [{
+                "file_path": str,
+                "title": str,       # 文件名（去扩展名）
+                "category": str,    # 父目录名
+                "tags": str,        # 空（未来可从文件 frontmatter 读）
+            }]
+        """
+        materials_dir = Path(__file__).parent.parent / "materials"
+        if not materials_dir.exists():
+            logger.warning(f"材料库目录不存在: {materials_dir}")
+            return []
+
+        result: list[dict[str, Any]] = []
+        for cat_dir in materials_dir.iterdir():
+            if not cat_dir.is_dir() or cat_dir.name.startswith("."):
+                continue
+            category = cat_dir.name
+            if category not in STANDARD_CATEGORIES:
+                continue
+
+            for file_path in cat_dir.iterdir():
+                if file_path.name in (".gitkeep", ".DS_Store") or file_path.is_dir():
+                    continue
+                # 只支持 .md 和 .docx
+                if file_path.suffix.lower() not in (".md", ".docx", ".doc"):
+                    continue
+
+                title = file_path.stem  # 文件名（去扩展名）
+                result.append({
+                    "file_path": str(file_path),
+                    "title": title,
+                    "category": category,
+                    "tags": "",
+                })
+
+        logger.info(f"从 {materials_dir} 加载 {len(result)} 个材料")
+        return result
 
     # ================================================================
     # 辅助：单章节 → 材料列表
@@ -327,34 +366,66 @@ class MatcherAgent(BaseAgent):
         # Tier 1: 精确分类匹配
         tier1 = [m for m in materials if m["category"] == target_category]
         if tier1:
+            # 优先级排序：标题完全匹配 > 标题子串匹配 > 其他同分类材料
+            chapter_title = chapter.get("title", "").strip()
+            # 去掉章节编号前缀
+            title_cleaned = re.sub(r"^第[一二三四五六七八九十\d]+[章节部分][\s\:：、]?", "", chapter_title)
+            title_cleaned = re.sub(r"^\d+[\.\s\:：、]+", "", title_cleaned).strip()
+
+            # 评分排序
+            scored = []
+            for m in tier1:
+                mtitle = m["title"]
+                score = 0
+                # 完全匹配（如"技术方案" == "项目技术方案"的核心部分）
+                if title_cleaned and title_cleaned in mtitle:
+                    score = 100
+                # 反向匹配（文件名在章节标题中）
+                elif mtitle and mtitle in title_cleaned:
+                    score = 90
+                # 同分类但标题无关
+                else:
+                    score = 50
+                scored.append((m, score))
+
+            # 按分数降序
+            scored.sort(key=lambda x: x[1], reverse=True)
+
             return [{
-                "material_id": m["id"],
+                "file_path": m["file_path"],
                 "material_title": m["title"],
                 "match_score": "高",
                 "reason": f"标准分类「{target_category}」直接匹配",
-            } for m in tier1[:3]]
+            } for m, _ in scored[:3]]
 
-        # Tier 2: 标题关键词匹配
-        title = chapter.get("title", "")
-        keywords = self._extract_chapter_keywords(title)
-        if keywords:
+        # Tier 2: 章节标题直接在文件名中出现（子串匹配）
+        title = chapter.get("title", "").strip()
+        if title:
+            # 去掉章节编号前缀（如"第N章"、"1."等）
+            title_cleaned = re.sub(r"^第[一二三四五六七八九十\d]+[章节部分][\s\:：、]?", "", title)
+            title_cleaned = re.sub(r"^\d+[\.\s\:：、]+", "", title_cleaned).strip()
+
             tier2: list[tuple[dict[str, Any], str]] = []
             for m in materials:
                 mtitle = m["title"] or ""
-                hit_kw = next((kw for kw in keywords if kw in mtitle), None)
-                if hit_kw:
-                    tier2.append((m, hit_kw))
+                # 章节标题直接出现在文件名中（至少 3 个字）
+                if len(title_cleaned) >= 3 and title_cleaned in mtitle:
+                    tier2.append((m, title_cleaned))
+                # 或者文件名直接出现在章节标题中（反向匹配，处理"售后服务方案"匹配"售后服务"）
+                elif len(mtitle) >= 3 and mtitle in title_cleaned:
+                    tier2.append((m, mtitle))
+
             if tier2:
                 return [{
-                    "material_id": m["id"],
+                    "file_path": m["file_path"],
                     "material_title": m["title"],
                     "match_score": "中",
-                    "reason": f"标题含关键词「{hit_kw}」",
-                } for m, hit_kw in tier2[:3]]
+                    "reason": f"标题匹配「{hit}」",
+                } for m, hit in tier2[:3]]
 
         # Tier 3: 无匹配
         return [{
-            "material_id": None,
+            "file_path": None,
             "material_title": "无匹配材料",
             "match_score": "低",
             "reason": "需新建",
@@ -697,3 +768,229 @@ class MatcherAgent(BaseAgent):
         ) or (
             "outline" in output and isinstance(output["outline"], list)
         )
+
+
+# ============================================================================
+# 提纲静态验证（Phase 0 - Task 0.1）
+# ============================================================================
+
+def validate_outline(
+    outline: list[dict[str, Any]],
+    scoring: dict[str, Any],
+    k12: str | None = None,
+) -> dict[str, Any]:
+    """
+    提纲静态验证（不调用 LLM）。
+
+    检查规则：
+    1. 评分项覆盖度 — scoring.dimensions 里带独立分值的 sub_items 是否在提纲中有对应章节/小节
+    2. 章节数量合理性 — 一级章节 3-10 个，每章小节 ≤10 个
+    3. 分类多样性 — 6 个标准分类至少用了 4 个
+    4. K12 模板遵从 — 如果 K12 是结构化目录，检查关键章节是否保留
+    5. 重复检查 — 章节标题不重复，小节标题不与父章节重复
+
+    Args:
+        outline: 提纲（generate_outline 的输出）
+        scoring: parsed_data 中的 scoring 模块
+        k12: K12_章节模板要求字段值
+
+    Returns:
+        {
+            "is_valid": bool,        # 是否有阻塞性错误
+            "warnings": [str],       # ⚠️ 警告列表
+            "errors": [str],         # ❌ 错误列表（阻塞性问题）
+            "stats": {               # 统计信息
+                "chapter_count": int,
+                "subsection_count": int,
+                "category_usage": dict,
+                "scoring_coverage": float,
+            }
+        }
+    """
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    if not outline:
+        errors.append("提纲为空")
+        return {
+            "is_valid": False,
+            "warnings": [],
+            "errors": errors,
+            "stats": {},
+        }
+
+    # ================================================================
+    # 规则 1: 评分项覆盖度
+    # ================================================================
+    scoring_items_checked = 0
+    scoring_items_missing = 0
+
+    for dim in scoring.get("dimensions", []):
+        for sub in dim.get("sub_items", []):
+            score = sub.get("score", 0)
+            if score == 0:
+                continue  # 跳过无分值的项
+
+            scoring_items_checked += 1
+            sub_name = sub.get("name", "").strip()
+            if not sub_name:
+                continue
+
+            # 在提纲的章节标题和小节标题中查找
+            found = False
+            for ch in outline:
+                ch_title = ch.get("title", "")
+                if sub_name in ch_title:
+                    found = True
+                    break
+                # 检查小节
+                for subsec in ch.get("subsections", []):
+                    if sub_name in subsec.get("title", ""):
+                        found = True
+                        break
+                if found:
+                    break
+
+            if not found:
+                scoring_items_missing += 1
+                warnings.append(
+                    f"⚠️ 评分项『{sub_name}』({score}分) 未在提纲中找到对应章节"
+                )
+
+    # ================================================================
+    # 规则 2: 章节数量合理性
+    # ================================================================
+    chapter_count = len(outline)
+    subsection_count = sum(len(ch.get("subsections", [])) for ch in outline)
+
+    if chapter_count < 3:
+        warnings.append(
+            f"⚠️ 一级章节只有 {chapter_count} 个，粒度可能太粗（建议 3-10 个）"
+        )
+    elif chapter_count > 10:
+        warnings.append(
+            f"⚠️ 一级章节有 {chapter_count} 个，可能过于细碎（建议 3-10 个）"
+        )
+
+    for ch in outline:
+        subs = ch.get("subsections", [])
+        if len(subs) > 10:
+            warnings.append(
+                f"⚠️ 第{ch.get('no')}章『{ch.get('title')}』有 {len(subs)} 个小节"
+                f"（建议 ≤10，考虑拆分为多个一级章节）"
+            )
+
+    # ================================================================
+    # 规则 3: 分类多样性
+    # ================================================================
+    category_usage = {}
+    for ch in outline:
+        cat = ch.get("category", "06_其他")
+        category_usage[cat] = category_usage.get(cat, 0) + 1
+
+    used_categories = len(category_usage)
+    if used_categories < 3:
+        warnings.append(
+            f"⚠️ 只使用了 {used_categories} 个标准分类，章节可能分类不当"
+            f"（建议使用 4-6 个分类）"
+        )
+
+    # 检查是否过度使用 06_其他
+    other_count = category_usage.get("06_其他", 0)
+    if other_count > chapter_count * 0.4:
+        warnings.append(
+            f"⚠️ {other_count} 个章节归为『06_其他』，占比过高"
+            f"（建议归入更具体的分类）"
+        )
+
+    # ================================================================
+    # 规则 4: K12 模板遵从
+    # ================================================================
+    if k12 and len(k12) > 20:
+        # 检查 K12 是否是结构化目录（包含"第一章"、"第二章"等）
+        is_structured = any(
+            pattern in k12
+            for pattern in ["第一章", "第二章", "第1章", "第2章", "1.", "2."]
+        )
+        if is_structured:
+            # 提取 K12 中的章节关键词（简单启发式）
+            import re
+            k12_chapters = re.findall(
+                r"第[一二三四五六七八九十\d]+章\s*[：:]\s*([^\n、，。]+)",
+                k12
+            )
+            if not k12_chapters:
+                k12_chapters = re.findall(r"第[一二三四五六七八九十\d]+章\s+([^\n]+)", k12)
+
+            # 检查是否保留了 K12 的关键章节
+            outline_titles = {ch.get("title", "") for ch in outline}
+            k12_missing = []
+            for k12_ch in k12_chapters[:10]:  # 只检查前 10 章
+                k12_ch = k12_ch.strip()
+                if not k12_ch:
+                    continue
+                # 模糊匹配（允许部分包含）
+                if not any(k12_ch[:5] in title for title in outline_titles):
+                    k12_missing.append(k12_ch)
+
+            if k12_missing and len(k12_missing) > len(k12_chapters) * 0.3:
+                warnings.append(
+                    f"⚠️ K12 要求的章节中有 {len(k12_missing)} 个未在提纲中体现，"
+                    f"如：{', '.join(k12_missing[:3])}"
+                )
+
+    # ================================================================
+    # 规则 5: 重复检查
+    # ================================================================
+    # 检查章节标题重复
+    title_counts: dict[str, int] = {}
+    for ch in outline:
+        title = ch.get("title", "").strip()
+        if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
+
+    duplicates = [t for t, c in title_counts.items() if c > 1]
+    if duplicates:
+        errors.append(
+            f"❌ 章节标题重复：{', '.join(f'『{t}』' for t in duplicates)}"
+        )
+
+    # 检查小节标题与父章节重复
+    for ch in outline:
+        ch_title = ch.get("title", "").strip()
+        for sub in ch.get("subsections", []):
+            sub_title = sub.get("title", "").strip()
+            if sub_title == ch_title:
+                warnings.append(
+                    f"⚠️ 第{ch.get('no')}章『{ch_title}』的小节标题与章节标题完全相同"
+                )
+            elif sub_title and ch_title and sub_title in ch_title:
+                warnings.append(
+                    f"⚠️ 第{ch.get('no')}章『{ch_title}』的小节『{sub_title}』"
+                    f"与章节标题重复（建议删除该小节或改为其他内容）"
+                )
+
+    # ================================================================
+    # 统计信息
+    # ================================================================
+    scoring_coverage = 0.0
+    if scoring_items_checked > 0:
+        scoring_coverage = (
+            (scoring_items_checked - scoring_items_missing) / scoring_items_checked
+        )
+
+    stats = {
+        "chapter_count": chapter_count,
+        "subsection_count": subsection_count,
+        "category_usage": category_usage,
+        "scoring_coverage": round(scoring_coverage, 2),
+        "scoring_items_checked": scoring_items_checked,
+        "scoring_items_missing": scoring_items_missing,
+    }
+
+    return {
+        "is_valid": len(errors) == 0,
+        "warnings": warnings,
+        "errors": errors,
+        "stats": stats,
+    }

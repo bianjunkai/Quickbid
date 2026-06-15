@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, AlertOctagon, Loader2, ListTree, Pencil } from "lucide-react";
+import { ChevronDown, AlertOctagon, Loader2, ListTree, Pencil, AlertTriangle, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -31,6 +31,20 @@ type Chapter = {
   source?: string;
 };
 
+type ValidationResult = {
+  is_valid: boolean;
+  warnings: string[];
+  errors: string[];
+  stats?: {
+    chapter_count: number;
+    subsection_count: number;
+    category_usage: Record<string, number>;
+    scoring_coverage: number;
+    scoring_items_checked?: number;
+    scoring_items_missing?: number;
+  };
+};
+
 export function OutlineToolResult({
   state,
   input,
@@ -39,7 +53,12 @@ export function OutlineToolResult({
 }: {
   state: string;
   input?: { projectId?: number; tenderType?: string };
-  output?: { outline?: Chapter[]; message?: string; action_hint?: string };
+  output?: {
+    outline?: Chapter[];
+    message?: string;
+    action_hint?: string;
+    validation?: ValidationResult;
+  };
   errorText?: string;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -81,44 +100,67 @@ export function OutlineToolResult({
     const outline = output.outline ?? [];
     const total = outline.length;
     const subsTotal = outline.reduce((s, c) => s + (c.subsections?.length ?? 0), 0);
+    const validation = output.validation;
 
     return (
-      <div className="card-soft overflow-hidden">
-        <button
-          onClick={() => setExpanded((e) => !e)}
-          className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--color-paper-warm)] transition-colors"
-          aria-expanded={expanded}
-        >
-          <ChevronDown
-            className={cn(
-              "w-3.5 h-3.5 text-[var(--color-ink-mute)] transition-transform",
-              !expanded && "-rotate-90"
-            )}
-          />
-          <ListTree className="w-3.5 h-3.5 text-[var(--color-primary)]" />
-          <span className="text-[13px] font-semibold text-[var(--color-ink)]">章节大纲</span>
-          <span className="text-[11px] text-[var(--color-ink-mute)] font-mono tabular-nums">
-            · {total} 章 {subsTotal > 0 && `· ${subsTotal} 小节`}
-          </span>
-        </button>
-
-        {expanded && (
-          <>
-            <ol className="border-t border-[var(--color-border)] divide-y divide-[var(--color-border)]">
-              {outline.map((ch, i) => (
-                <ChapterRow key={ch.id ?? i} chapter={ch} index={i} />
-              ))}
-            </ol>
-            {output.action_hint && (
-              <div className="px-4 py-2.5 bg-[var(--color-primary-bg)] border-t border-[var(--color-primary-tint)] flex items-start gap-2">
-                <Pencil className="w-3 h-3 text-[var(--color-primary-deep)] mt-0.5 shrink-0" />
-                <div className="text-[12px] text-[var(--color-primary-deep)] leading-relaxed">
-                  {output.action_hint}
-                </div>
-              </div>
-            )}
-          </>
+      <div className="space-y-3">
+        {/* 验证结果卡片 */}
+        {validation && (validation.errors.length > 0 || validation.warnings.length > 0) && (
+          <ValidationCard validation={validation} />
         )}
+
+        {/* 提纲展示 */}
+        <div className="card-soft overflow-hidden">
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--color-paper-warm)] transition-colors"
+            aria-expanded={expanded}
+          >
+            <ChevronDown
+              className={cn(
+                "w-3.5 h-3.5 text-[var(--color-ink-mute)] transition-transform",
+                !expanded && "-rotate-90"
+              )}
+            />
+            <ListTree className="w-3.5 h-3.5 text-[var(--color-primary)]" />
+            <span className="text-[13px] font-semibold text-[var(--color-ink)]">章节大纲</span>
+            <span className="text-[11px] text-[var(--color-ink-mute)] font-mono tabular-nums">
+              · {total} 章 {subsTotal > 0 && `· ${subsTotal} 小节`}
+            </span>
+            {validation && validation.stats && validation.stats.scoring_coverage !== undefined && (
+              <span
+                className={cn(
+                  "text-[11px] font-mono tabular-nums",
+                  validation.stats.scoring_coverage >= 0.8
+                    ? "text-[var(--color-success)]"
+                    : validation.stats.scoring_coverage >= 0.6
+                    ? "text-[var(--color-warning)]"
+                    : "text-[var(--color-danger)]"
+                )}
+              >
+                · 评分覆盖 {Math.round(validation.stats.scoring_coverage * 100)}%
+              </span>
+            )}
+          </button>
+
+          {expanded && (
+            <>
+              <ol className="border-t border-[var(--color-border)] divide-y divide-[var(--color-border)]">
+                {outline.map((ch, i) => (
+                  <ChapterRow key={ch.id ?? i} chapter={ch} index={i} />
+                ))}
+              </ol>
+              {output.action_hint && (
+                <div className="px-4 py-2.5 bg-[var(--color-primary-bg)] border-t border-[var(--color-primary-tint)] flex items-start gap-2">
+                  <Pencil className="w-3 h-3 text-[var(--color-primary-deep)] mt-0.5 shrink-0" />
+                  <div className="text-[12px] text-[var(--color-primary-deep)] leading-relaxed">
+                    {output.action_hint}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     );
   }
@@ -170,5 +212,90 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
         </div>
       </div>
     </li>
+  );
+}
+
+function ValidationCard({ validation }: { validation: ValidationResult }) {
+  const { errors, warnings, is_valid, stats } = validation;
+  const hasErrors = errors.length > 0;
+  const hasWarnings = warnings.length > 0;
+
+  return (
+    <div
+      className={cn(
+        "card-soft p-4 border-l-4",
+        hasErrors
+          ? "border-[var(--color-danger)] bg-red-50/50"
+          : "border-[var(--color-warning)] bg-yellow-50/50"
+      )}
+    >
+      {/* 标题 */}
+      <div className="flex items-start gap-2 mb-3">
+        {hasErrors ? (
+          <XCircle className="w-4 h-4 text-[var(--color-danger)] shrink-0 mt-0.5" />
+        ) : (
+          <AlertTriangle className="w-4 h-4 text-[var(--color-warning)] shrink-0 mt-0.5" />
+        )}
+        <div className="flex-1">
+          <div className="text-[13px] font-semibold text-[var(--color-ink)] mb-0.5">
+            提纲验证{hasErrors ? "失败" : "警告"}
+          </div>
+          {stats && (
+            <div className="text-[11px] text-[var(--color-ink-mute)] font-mono">
+              {stats.scoring_items_checked && stats.scoring_items_missing !== undefined && (
+                <span>
+                  评分项覆盖: {stats.scoring_items_checked - stats.scoring_items_missing}/
+                  {stats.scoring_items_checked}
+                  {stats.scoring_coverage !== undefined &&
+                    ` (${Math.round(stats.scoring_coverage * 100)}%)`}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {!is_valid && (
+          <span className="text-[10px] font-semibold text-[var(--color-danger)] uppercase tracking-wider px-2 py-0.5 rounded-md bg-red-100 border border-red-200">
+            阻塞
+          </span>
+        )}
+      </div>
+
+      {/* 错误列表 */}
+      {hasErrors && (
+        <div className="space-y-1.5 mb-3">
+          {errors.map((err, i) => (
+            <div
+              key={i}
+              className="flex items-start gap-2 text-[12px] text-[var(--color-danger)] leading-relaxed pl-1"
+            >
+              <span className="shrink-0 mt-0.5">•</span>
+              <span>{err}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 警告列表 */}
+      {hasWarnings && (
+        <div className="space-y-1.5">
+          {warnings.map((warn, i) => (
+            <div
+              key={i}
+              className="flex items-start gap-2 text-[12px] text-[var(--color-warning-deep)] leading-relaxed pl-1"
+            >
+              <span className="shrink-0 mt-0.5">•</span>
+              <span>{warn}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 操作提示 */}
+      {hasErrors && (
+        <div className="mt-3 pt-3 border-t border-red-200 text-[11px] text-[var(--color-ink-soft)]">
+          请修复上述错误后再继续，或说"重新生成"让 AI 重新设计提纲
+        </div>
+      )}
+    </div>
   );
 }
