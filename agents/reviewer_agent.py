@@ -102,6 +102,8 @@ class ReviewerAgent(BaseAgent):
                 draft_content = f.read()
         except Exception as e:
             return "", {}, f"读取 draft.md 失败: {e}"
+        if not draft_content.strip():
+            return "", {}, "draft.md 为空，无法终审"
 
         project_context: dict[str, Any] = {}
         project = session.get(Project, tender.project_id)

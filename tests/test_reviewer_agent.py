@@ -57,9 +57,42 @@ def test_reviewer_error_report_includes_sub_bid_checks():
     print("✅ test_reviewer_error_report_includes_sub_bid_checks passed")
 
 
+def test_reviewer_rejects_empty_draft():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from types import SimpleNamespace
+
+    with TemporaryDirectory() as tmp:
+        draft = Path(tmp) / "draft.md"
+        draft.write_text("   \n", encoding="utf-8")
+
+        class FakeSession:
+            def get(self, model, _id):
+                if model.__name__ == "Tender":
+                    return SimpleNamespace(id=_id, project_id=1, draft_path=str(draft))
+                return None
+
+        import agents.reviewer_agent as reviewer_module
+
+        old_get_session = reviewer_module.get_session
+        reviewer_module.get_session = lambda: FakeSession()
+        try:
+            content, context, error = ReviewerAgent()._load_review_context(
+                SimpleNamespace(tender_id=1)
+            )
+        finally:
+            reviewer_module.get_session = old_get_session
+
+        assert content == ""
+        assert context == {}
+        assert error == "draft.md 为空，无法终审"
+        print("✅ test_reviewer_rejects_empty_draft passed")
+
+
 if __name__ == "__main__":
     print("Running ReviewerAgent tests...\n")
     test_reviewer_normalizes_structured_schema()
     test_reviewer_error_report_uses_fixed_schema()
     test_reviewer_error_report_includes_sub_bid_checks()
+    test_reviewer_rejects_empty_draft()
     print("\n🎉 All tests passed!")
