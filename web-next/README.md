@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# QuickBid Web Frontend
 
-## Getting Started
+`web-next/` is the current QuickBid frontend: Next.js 15, React 19,
+Tailwind 4, and Vercel AI SDK. The legacy Vue app under `web/` is retained
+only for reference.
 
-First, run the development server:
+## Development
+
+Start the FastAPI backend first:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd ..
+source .venv/bin/activate
+python main.py
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then start the frontend:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The app runs at `http://localhost:3000`. API calls use `/api/*`, which
+`next.config.ts` rewrites to `http://localhost:8000/*` in development.
 
-## Learn More
+## Main Routes
 
-To learn more about Next.js, take a look at the following resources:
+- `/projects` — project list and entry point.
+- `/projects/[id]` — confirmation-driven chat workspace.
+- `/projects/[id]?file=<path>` — full-screen Markdown viewer for generated
+  tender files.
+- `/materials` — material library table.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Key Files
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `app/projects/[id]/page.tsx` — chat route plus Markdown viewer overlay.
+- `components/chat-thread.tsx` — AI SDK chat transport binding.
+- `components/message-list.tsx` — text and tool result renderer.
+- `components/file-sidebar.tsx` — generated tender file tree.
+- `components/markdown-viewer.tsx` — Markdown file reader/viewer.
+- `components/tools/` — tool result UIs for parse, outline, match, generate.
+- `lib/api.ts` — typed fetch client for FastAPI endpoints.
 
-## Deploy on Vercel
+## Verification
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npx tsc --noEmit
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+For SSE changes, also verify event order against the Vercel AI SDK Data Stream
+Protocol: `start -> text-* -> tool-input-available -> tool-output-available ->
+finish-step -> finish-message -> finish`.

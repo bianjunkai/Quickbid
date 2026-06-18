@@ -338,8 +338,8 @@ class MatcherAgent(BaseAgent):
             for file_path in cat_dir.iterdir():
                 if file_path.name in (".gitkeep", ".DS_Store") or file_path.is_dir():
                     continue
-                # 只支持 .md 和 .docx
-                if file_path.suffix.lower() not in (".md", ".docx", ".doc"):
+                # MVP 只支持 .md 和 .docx
+                if file_path.suffix.lower() not in (".md", ".docx"):
                     continue
 
                 title = file_path.stem  # 文件名（去扩展名）

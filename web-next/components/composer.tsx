@@ -8,18 +8,22 @@ const QUICK_REPLIES: Record<string, string[]> = {
   parsing: ["放好了"],
   parsed: ["继续"],
   outline_generating: ["继续"],
-  materials_preparing: ["继续"],
-  draft_ready: ["终审", "导出"],
-  reviewing: ["导出"],
-  done: ["导出"],
+  materials_preparing: ["生成"],
+  generated: ["终审", "生成陪标", "导出Word"],
+  reviewing: ["导出Word"],
+  reviewed: ["生成陪标", "导出Word"],
+  review_failed: ["终审"],
+  done: ["生成陪标", "导出Word"],
 };
 
 const QUICK_REPLY_DESC: Record<string, string> = {
   放好了: "开始解析招标文件",
   继续: "进入材料匹配",
   生成: "生成主标书",
+  生成陪标: "生成陪标并自动终审",
   终审: "C01-C10 合规检查",
   导出: "导出最终版本",
+  导出Word: "导出 Word 文件",
 };
 
 export function Composer({

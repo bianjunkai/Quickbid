@@ -23,6 +23,7 @@ type MatchedChapter = {
   chapter?: string;
   chapter_id?: string;
   category?: string;
+  file_path?: string | null;
   material_id?: number | null;
   material_title?: string;
   match_score?: string;
@@ -82,7 +83,7 @@ export function MatchToolResult({
 
   if (state === "output-available" && output) {
     const chapters = output.chapters ?? [];
-    const matched = chapters.filter((c) => c.material_id).length;
+    const matched = chapters.filter((c) => c.file_path || c.material_id).length;
     const empty = chapters.length > 0 && matched === 0;
 
     return (

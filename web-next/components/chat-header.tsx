@@ -18,18 +18,26 @@ import { cn } from "@/lib/utils";
 const STATUS_STATE: Record<string, "parsing" | "parsed" | "done" | "error"> = {
   parsing: "parsing",
   parsed: "parsed",
+  outline_generating: "parsing",
   materials_preparing: "parsing",
-  draft_ready: "parsed",
+  generating: "parsing",
+  generated: "parsed",
   reviewing: "parsing",
+  reviewed: "done",
+  review_failed: "error",
   done: "done",
 };
 
 const STATUS_LABEL: Record<string, string> = {
   parsing: "解析中",
   parsed: "已解析",
+  outline_generating: "提纲确认",
   materials_preparing: "材料准备",
-  draft_ready: "草稿就绪",
+  generating: "生成中",
+  generated: "已生成",
   reviewing: "审查中",
+  reviewed: "已终审",
+  review_failed: "终审失败",
   done: "完成",
 };
 

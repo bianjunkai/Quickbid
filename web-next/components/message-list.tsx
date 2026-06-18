@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 import { ParseToolResult } from "./tools/parse-tool-result";
 import { OutlineToolResult } from "./tools/outline-tool-result";
 import { MatchToolResult } from "./tools/match-tool-result";
+import { GeneratorToolResult } from "./tools/generator-tool-result";
+import { ExportToolResult } from "./tools/export-tool-result";
 import { ToolFallback } from "./tools/tool-fallback";
 
 export function MessageList({
@@ -149,6 +151,12 @@ function ToolPart({
   }
   if (toolName === "matchMaterials") {
     return <MatchToolResult state={state} input={input} output={output} errorText={errorText} />;
+  }
+  if (toolName === "generateTender") {
+    return <GeneratorToolResult state={state} input={input} output={output} errorText={errorText} />;
+  }
+  if (toolName === "exportTender") {
+    return <ExportToolResult state={state} input={input} output={output} errorText={errorText} />;
   }
   return (
     <ToolFallback

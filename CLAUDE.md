@@ -66,9 +66,9 @@ main.py（FastAPI）─────┘
 ```
 
 - `cli.py` — 纯交互层，`ConversationManager` 接收用户输入，委托给 Orchestrator
-- `main.py` — FastAPI REST API（11 个 REST 端点 + 2 个 SSE 端点），供 `web-next/` 前端调用
-- `orchestrator.py` — Agent 编排器，待实现
-- `agents/` — 5 个特化 Agent，待实现
+- `main.py` — FastAPI REST API（REST + SSE，AI SDK Data Stream Protocol），供 `web-next/` 前端调用
+- `orchestrator.py` — Agent 编排器（确认驱动状态机 + Agent 调度 + 主标文件落盘）
+- `agents/` — 特化 Agent：Parser / Matcher / Generator / Reviewer / SubBid
 
 ### 状态机（ConversationManager）
 
@@ -92,7 +92,7 @@ Next.js 15 + React 19 + TypeScript + Tailwind 4 + Vercel AI SDK。路由：`/pro
 - **状态机**：保留关键词路由（`放好了`→parse，`继续`→match，`生成`→generate，`终审`→review，`导出`→export），不重做
 - **API 代理**：`next.config.ts` 的 `rewrites` 把 `/api/*` 转发到 `http://localhost:8000/*`
 - **设计 tokens**：Tailwind 4 `@theme inline` 直接用 CSS 变量（暖色编辑风格，移植自旧 Vue `style.css`）
-- **历史**：Vue 3 + Element Plus 版本曾在 `web/` 目录，迁移完成已删除（见 `docs/architecture-decisions.md`）
+- **历史**：Vue 3 + Element Plus 版本保留在 `web/` 目录，仅作参考；当前开发以 `web-next/` 为准。
 
 ### SSE 端点（AI SDK Data Stream Protocol）
 

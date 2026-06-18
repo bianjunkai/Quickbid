@@ -20,8 +20,19 @@ export interface ProjectDetail extends Project {
   budget?: number;
   deadline?: string;
   open_time?: string;
+  tender_id?: number;
+  active_main_tender_id?: number;
+  tenders?: TenderSummary[];
   parsed_data?: any;
   messages?: UIMessageData[];
+}
+
+export interface TenderSummary {
+  id: number;
+  type: "main" | "sub" | string;
+  status: string;
+  draft_path?: string | null;
+  created_at?: string | null;
 }
 
 export interface Material {
@@ -193,5 +204,19 @@ export async function readTenderFile(
   }
   return res.text();
 }
+
+export const exportTender = (
+  tenderId: number,
+  format: "word" | "markdown" | "docx" | "md" = "word"
+) =>
+  request<{
+    message: string;
+    format: string;
+    export_path: string;
+    download_url: string;
+  }>(`/api/tenders/${tenderId}/export`, {
+    method: "POST",
+    body: JSON.stringify({ format }),
+  });
 
 export { ApiError };

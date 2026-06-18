@@ -69,7 +69,8 @@
 | `config.yaml` | 全局配置（路径 / AI provider / 分类定义） |
 | `file_utils.py` | PDF/DOCX 文件文本提取 |
 | `export_engine.py` | Word/PDF/Markdown 导出 |
-| `web/` | Vue.js 3 前端（Element Plus） |
+| `web-next/` | Next.js 15 + React 19 + Tailwind 4 前端 |
+| `web/` | 旧 Vue.js 3 前端，仅作历史参考 |
 
 ---
 
@@ -93,7 +94,7 @@ Project（投标项目）
 
 #### Project
 - `id` / `name` / `tender_file_path`
-- `status`: `parsing` → `parsed` → `materials_preparing` → `generating` → `done`
+- `status`: `parsing` → `parsed` → `outline_generating` → `materials_preparing` → `generated` → `reviewing` → `reviewed` → `done`
 - `parsed_data`: 完整 K01-K14 JSON（`json.dumps` 序列化）
 - `project_name` / `tender_no` / `budget` / `deadline` / `open_time`（解析出的字段）
 
@@ -225,14 +226,16 @@ Quickbid/
 │   └── 06_其他/
 ├── projects/                    # 项目目录
 ├── exports/                     # 导出目录
-└── web/                         # Vue.js 3 前端
-    ├── src/
-    │   ├── api/index.ts
-    │   ├── router/index.ts
-    │   ├── store/project.ts
-    │   ├── views/project/
-    │   └── views/material/
-    └── ...
+└── web-next/                    # Next.js 15 + React 19 前端
+    ├── app/
+    │   ├── projects/
+    │   └── materials/
+    ├── components/
+    │   ├── chat-thread.tsx
+    │   ├── file-sidebar.tsx
+    │   ├── markdown-viewer.tsx
+    │   └── tools/
+    └── lib/api.ts
 ```
 
 ---
@@ -245,7 +248,7 @@ Quickbid/
 | 多 Agent 编排 | 自建 Orchestrator | 轻量可控，Agent 间通过结构化上下文通信 |
 | 数据库 | SQLite + SQLAlchemy | 本地持久化，无需服务 |
 | API 层 | FastAPI | 供 Web 前端集成 |
-| Web 前端 | Vue 3 + Element Plus + Vite | 企业级 UI，TypeScript |
+| Web 前端 | Next.js 15 + React 19 + Tailwind 4 + Vercel AI SDK | 流式对话 UI，TypeScript |
 | PDF 解析 | PyMuPDF | 速度快、文本提取准 |
 | Word 导出 | python-docx | 成熟稳定 |
 | PDF 导出 | WeasyPrint | Python 原生方案 |
@@ -284,25 +287,27 @@ Quickbid/
 - ✅ SQLAlchemy 数据模型（Project / Tender / Material / MaterialUsage）
 - ✅ FastAPI REST API（11 个端点）
 - ✅ 会话持久化（.session.json）
-- ✅ Vue.js Web 前端骨架（路由 / 7 步向导 / 材料管理）
+- ✅ Next.js Web 前端（项目列表 / chat thread / 材料库 / 文件侧栏 / Markdown 查看器）
 - ✅ 目录结构搭建（materials / projects / exports + .gitkeep）
 - ✅ PyQt5 冗余代码清理
+- ✅ 多 Agent 框架（agents/ + orchestrator.py）
+- ✅ ParserAgent + DeepSeek K01-K14 解析
+- ✅ MatcherAgent + 提纲验证 + 材料匹配
+- ✅ GeneratorAgent + 主标 Markdown 初稿生成
+- ✅ ReviewerAgent + C01-C10 DeepSeek 结构化审查
+- ✅ Word / Markdown 导出
+- ✅ Web 前端 MVP 错误态和状态快捷指令
 
 ### 进行中 / 待实现
 
 | 优先级 | 功能 | 状态 |
 |--------|------|------|
-| P0 | 多 Agent 框架（agents/ + orchestrator.py） | 待实现 |
-| P0 | ParserAgent + DeepSeek K01-K14 解析 | 待实现 |
-| P0 | GeneratorAgent + 标书初稿生成 | 待实现 |
-| P1 | MatcherAgent + 材料匹配 | 待实现 |
-| P1 | ReviewerAgent + C01-C10 审查 | 待实现 |
+| P0 | 主标 MVP 技术债收口（重复路由、active tender、状态漂移） | 已完成 |
 | P1 | 陪标模式（SubBidAgent + Reviewer 审查） | 待实现 |
 | P1 | 材料库批量导入脚本 | 待实现 |
-| P2 | Word 导出（目录/页眉页脚） | 待实现 |
 | P2 | PDF 导出（WeasyPrint） | 待实现 |
-| P3 | Web 前端完善（认证/错误处理/空状态） | 部分完成 |
+| P3 | Web 前端产品化完善（认证/权限/更细错误恢复） | 后置 |
 
 ---
 
-*最后更新：2026-05-30 | License: MIT*
+*最后更新：2026-06-18 | License: MIT*

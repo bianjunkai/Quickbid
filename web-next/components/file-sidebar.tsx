@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Folder,
   FolderOpen,
@@ -9,17 +9,17 @@ import {
   ChevronRight,
   Plus,
   ExternalLink,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ProjectDetail } from "@/lib/api";
-
-const MAIN_BID_FOLDERS = [
-  "商务文件",
-  "技术方案",
-  "实施计划",
-  "公司资质",
-  "配图附件",
-];
+import type { ProjectDetail, TenderSummary } from "@/lib/api";
+import {
+  listTenderFiles,
+  type TenderFileEntry,
+  type TenderFileTree,
+  type TenderFolder,
+} from "@/lib/api";
+import { useRouter } from "next/navigation";
 
 export function FileSidebar({
   project,
@@ -28,10 +28,59 @@ export function FileSidebar({
   project: ProjectDetail;
   onOpenReport?: () => void;
 }) {
+  const router = useRouter();
   const [shut, setShut] = useState(false);
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
-  const subBids: { id: number; name: string }[] =
-    (project.parsed_data?.sub_bids as any[]) || [];
+  const [fileTrees, setFileTrees] = useState<Record<number, TenderFileTree>>({});
+  const [loadingTree, setLoadingTree] = useState(false);
+  const activeTenderId = project.active_main_tender_id ?? project.tender_id;
+  const tenders = project.tenders || [];
+  const mainTender =
+    tenders.find((t) => t.id === activeTenderId) ||
+    (activeTenderId ? ({ id: activeTenderId, type: "main" } as TenderSummary) : undefined);
+  const subTenders = tenders.filter((t) => t.type === "sub" && t.draft_path);
+  const mainFileTree = activeTenderId ? fileTrees[activeTenderId] : null;
+  const tenderIdsToLoad = Array.from(
+    new Set([
+      ...(mainTender?.id ? [mainTender.id] : []),
+      ...subTenders.map((t) => t.id),
+    ])
+  );
+  const tenderIdsKey = tenderIdsToLoad.join(",");
+
+  // 动态拉取文件树（主标 + 已落盘陪标）
+  useEffect(() => {
+    const shouldLoad =
+      tenderIdsToLoad.length > 0 &&
+      (project.status === "generating" ||
+        project.status === "generated" ||
+        project.status === "reviewed" ||
+        project.status === "done");
+    if (!shouldLoad) {
+      setFileTrees({});
+      return;
+    }
+    let cancelled = false;
+    setLoadingTree(true);
+    Promise.all(
+      tenderIdsToLoad.map((tenderId) =>
+        listTenderFiles(project.id, tenderId).then((tree) => [tenderId, tree] as const)
+      )
+    )
+      .then((entries) => {
+        if (!cancelled) setFileTrees(Object.fromEntries(entries));
+      })
+      .catch((e) => {
+        console.error("拉取文件树失败：", e);
+        if (!cancelled) setFileTrees({});
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTree(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, project.status, tenderIdsKey]);
 
   const toggleFolder = (key: string) => {
     setOpenFolders((prev) => {
@@ -113,44 +162,59 @@ export function FileSidebar({
                 <span>主标</span>
                 <span className="count">03</span>
               </div>
-              <div className="space-y-0.5">
-                {MAIN_BID_FOLDERS.map((name) => (
-                  <FolderRow
-                    key={`main-${name}`}
-                    name={name}
-                    open={openFolders.has(`main-${name}`)}
-                    onToggle={() => toggleFolder(`main-${name}`)}
-                  />
-                ))}
-              </div>
+              {loadingTree ? (
+                <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-[var(--color-ink-mute)]">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  加载文件树…
+                </div>
+              ) : mainFileTree && (mainFileTree.top_files.length > 0 || mainFileTree.folders.length > 0) ? (
+                <TenderTreeView
+                  tree={mainFileTree}
+                  openFolders={openFolders}
+                  onToggleFolder={toggleFolder}
+                  onFileClick={(tenderId, filePath) =>
+                    router.push(`/projects/${project.id}?tender=${tenderId}&file=${encodeURIComponent(filePath)}`)
+                  }
+                />
+              ) : (
+                <div className="px-3 py-2 text-[11px] text-[var(--color-ink-mute)]">
+                  暂无文件
+                </div>
+              )}
             </div>
 
             {/* Sub-bids */}
-            {subBids.length > 0 && (
+            {subTenders.length > 0 && (
               <div>
                 <div className="section-label">
                   <span>陪标</span>
-                  <span className="count">{String(subBids.length).padStart(2, "0")}</span>
+                  <span className="count">{String(subTenders.length).padStart(2, "0")}</span>
                 </div>
-                <div className="space-y-2">
-                  {subBids.map((sub) => (
-                    <div key={sub.id}>
-                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-[var(--color-ink-soft)] font-medium">
-                        <span className="w-1 h-1 rounded-full bg-[var(--color-ink-mute)]" />
-                        <span className="truncate flex-1">{sub.name}</span>
-                      </div>
-                      <div className="space-y-0.5 ml-2">
-                        {MAIN_BID_FOLDERS.map((name) => (
-                          <FolderRow
-                            key={`sub-${sub.id}-${name}`}
-                            name={name}
-                            open={openFolders.has(`sub-${sub.id}-${name}`)}
-                            onToggle={() => toggleFolder(`sub-${sub.id}-${name}`)}
+                <div className="space-y-3">
+                  {subTenders.map((tender, idx) => {
+                    const tree = fileTrees[tender.id];
+                    return (
+                      <div key={tender.id} className="space-y-1.5">
+                        <div className="px-2.5 text-[10px] text-[var(--color-ink-mute)] font-mono">
+                          SUB-{String(idx + 1).padStart(2, "0")} · T{tender.id}
+                        </div>
+                        {tree && (tree.top_files.length > 0 || tree.folders.length > 0) ? (
+                          <TenderTreeView
+                            tree={tree}
+                            openFolders={openFolders}
+                            onToggleFolder={toggleFolder}
+                            onFileClick={(tenderId, filePath) =>
+                              router.push(`/projects/${project.id}?tender=${tenderId}&file=${encodeURIComponent(filePath)}`)
+                            }
                           />
-                        ))}
+                        ) : (
+                          <div className="px-3 py-2 text-[11px] text-[var(--color-ink-mute)]">
+                            暂无文件
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -167,6 +231,134 @@ export function FileSidebar({
       )}
     </aside>
   );
+}
+
+function TenderTreeView({
+  tree,
+  openFolders,
+  onToggleFolder,
+  onFileClick,
+}: {
+  tree: TenderFileTree;
+  openFolders: Set<string>;
+  onToggleFolder: (key: string) => void;
+  onFileClick: (tenderId: number, filePath: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      {tree.top_files.length > 0 && (
+        <TopFilesList
+          files={tree.top_files}
+          onFileClick={(filePath) => onFileClick(tree.tender_id, filePath)}
+        />
+      )}
+      <div className="space-y-0.5">
+        {tree.folders.map((folder) => {
+          const key = `${tree.tender_id}:${folder.category}`;
+          return (
+            <DynamicFolderRow
+              key={key}
+              folder={folder}
+              open={openFolders.has(key)}
+              onToggle={() => onToggleFolder(key)}
+              onFileClick={(filePath) => onFileClick(tree.tender_id, filePath)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DynamicFolderRow({
+  folder,
+  open,
+  onToggle,
+  onFileClick,
+}: {
+  folder: TenderFolder;
+  open: boolean;
+  onToggle: () => void;
+  onFileClick: (filePath: string) => void;
+}) {
+  const displayName = folder.name || prettyCategory(folder.category);
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        className="group w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12.5px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors text-left min-h-[30px]"
+      >
+        <ChevronRight
+          className={cn(
+            "w-3 h-3 text-[var(--color-ink-mute)] transition-transform shrink-0",
+            open && "rotate-90 text-[var(--color-primary)]"
+          )}
+        />
+        {open ? (
+          <FolderOpen className="w-3.5 h-3.5 text-[var(--color-primary)] shrink-0" />
+        ) : (
+          <Folder className="w-3.5 h-3.5 text-[var(--color-ink-mute)] group-hover:text-[var(--color-primary)] shrink-0" />
+        )}
+        <span className="truncate">{displayName}</span>
+        <span className="ml-auto text-[10px] text-[var(--color-ink-mute)] font-mono tabular-nums">
+          {folder.files?.length || 0}
+        </span>
+      </button>
+      {open && folder.files && folder.files.length > 0 && (
+        <div className="ml-6 mt-0.5 space-y-0.5">
+          {folder.files.map((file) => (
+            <FileRow key={file.path} file={file} onFileClick={onFileClick} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopFilesList({
+  files,
+  onFileClick,
+}: {
+  files: TenderFileEntry[];
+  onFileClick: (filePath: string) => void;
+}) {
+  return (
+    <div className="space-y-0.5 border-b border-[var(--color-border)] pb-2">
+      {files.map((file) => (
+        <FileRow key={file.path} file={file} onFileClick={onFileClick} />
+      ))}
+    </div>
+  );
+}
+
+function FileRow({
+  file,
+  onFileClick,
+}: {
+  file: TenderFileEntry;
+  onFileClick: (filePath: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onFileClick(file.path)}
+      className="group w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors text-left"
+      title={`${file.name} · ${file.size || 0} 字符`}
+    >
+      <FileText className="w-3 h-3 text-[var(--color-ink-mute)] group-hover:text-[var(--color-primary)] shrink-0" />
+      <span className="truncate flex-1">{file.name}</span>
+      {file.chapter_no && (
+        <span className="text-[10px] text-[var(--color-ink-mute)] font-mono tabular-nums">
+          #{file.chapter_no}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function prettyCategory(category: string): string {
+  const idx = category.indexOf("_");
+  return idx >= 0 ? category.slice(idx + 1) : category;
 }
 
 function FolderRow({

@@ -11,7 +11,7 @@ The patch introduces a real, high-confidence bug in `_sanitize_filename` where t
 
 ## Findings
 
-### [P1] Filename sanitizer regex strips the literal letters r, n, t
+### [x] [P1] Filename sanitizer regex strips the literal letters r, n, t
 
 - **Location**: [orchestrator.py:690-697](/Users/bianjunkai/Documents/Develop/Quickbid/Quickbid/orchestrator.py:690)
 - **Reporter's claim**: In `orchestrator.py::_sanitize_filename`, the pattern `r'[\/\\\:\*\?"\<\>\|\r\n\t]+'` is a raw string, so `\r`, `\n`, `\t` collapse to the literal characters `\`, `r`, `\`, `n`, `\`, `t`. The character class therefore matches the letters `r`, `n`, and `t` (in addition to the intended Windows-illegal chars).
@@ -28,20 +28,20 @@ The patch introduces a real, high-confidence bug in `_sanitize_filename` where t
 
   The reporter's reproduction was produced against a different (or stale) source string. With the file as it stands today, the regex behaves as intended for ASCII titles. **Downgrade to P3 / cosmetic**: the code works, but the pattern is needlessly verbose (15 backslashes to express 4 control chars) and brittle to further edits. Recommend rewriting to either a non-raw literal with `\r\n\t` or a clearer raw form such as `r'[\\/:*?"<>|\r\n\t]+'`.
 
-### [P2] _write_main_tender_files crashes when chapter no is not numeric
+### [x] [P2] _write_main_tender_files crashes when chapter no is not numeric
 
 - **Location**: [orchestrator.py:654-661](/Users/bianjunkai/Documents/Develop/Quickbid/Quickbid/orchestrator.py:654)
 - **Issue**: The loop builds `fname = f"{int(no):02d}_{self._sanitize_filename(title)}.md"`. `no` originates from `ch_outline.get("no")` in `GeneratorAgent.execute` ([generator_agent.py:115](/Users/bianjunkai/Documents/Develop/Quickbid/Quickbid/agents/generator_agent.py:115)) and falls through whatever the LLM emits (often a string, e.g. `"?"`, `"一"`). `int(no)` raises `ValueError`, the whole file-writing step aborts before any file is written, the outer `except` only logs a warning, and `tender.draft_path` is never set.
 - **Verification result**: confirmed. `GeneratorAgent` does not coerce the `no` field before assembly, and several call sites in `generator_agent.py` (lines 164, 251, 305) default to `"?"` for missing keys. The `int()` cast in `_write_main_tender_files` is a real crash hazard for any non-numeric LLM output.
 - **Suggested fix**: coerce in `_write_main_tender_files` (e.g. `try: n = int(no) except: n = 0`) or, better, normalize the chapter number in `GeneratorAgent.assemble_chapters` so downstream callers receive a clean int.
 
-### [P2] Unused local variable draft_content in run_workflow
+### [x] [P2] Unused local variable draft_content in run_workflow
 
 - **Location**: [orchestrator.py:137-152](/Users/bianjunkai/Documents/Develop/Quickbid/Quickbid/orchestrator.py:137)
 - **Issue**: `draft_content = gen_result.get("content", "")` (line 139) is assigned but never read. The actual content is now persisted via `_write_main_tender_files` and read back from `t.draft_path`. The dead assignment should be removed to keep the auto-workflow path consistent.
 - **Verification result**: confirmed. After the assignment, `draft_content` has no further references; the file-writing path uses `gen_result.get("content", "")` directly inside `_write_main_tender_files`.
 
-### [P3] materials/04_实施方案 placeholder deleted, breaking 6-category convention
+### [x] [P3] materials/04_实施方案 placeholder deleted, breaking 6-category convention
 
 - **Location**: [materials/04_实施方案/.gitkeep](/Users/bianjunkai/Documents/Develop/Quickbid/Quickbid/materials/04_实施方案/.gitkeep)
 - **Issue**: The diff drops `materials/04_实施方案/.gitkeep`, removing the empty `04_实施方案` directory from the working tree. `AGENTS.md` and `docs/multi-agent-architecture.md` still document six fixed categories (`01_公司资质` … `06_其他`), and `agents/matcher_agent.py` hardcodes the same six.
@@ -51,7 +51,7 @@ The patch introduces a real, high-confidence bug in `_sanitize_filename` where t
   ```
   Anyone adding materials to `04_实施方案` will hit a missing-directory error. Restore the placeholder or update the docs to reflect the new 5-category layout.
 
-### [P3] Inline imports and unused outline variable in _write_main_tender_files
+### [x] [P3] Inline imports and unused outline variable in _write_main_tender_files
 
 - **Location**: [orchestrator.py:611-697](/Users/bianjunkai/Documents/Develop/Quickbid/Quickbid/orchestrator.py:611)
 - **Issue**: `_write_main_tender_files` performs `import logging` inside the `except` block (~line 683) and `import re as _re` inside `_sanitize_filename` (~line 690) even though both modules are already imported at the top of the file. The local `outline = gen_result.get("outline", []) or []` (~line 613) is also computed but never used. `chapters` already carries the fields needed for the per-chapter file.
@@ -68,3 +68,18 @@ The patch introduces a real, high-confidence bug in `_sanitize_filename` where t
 ## Notes on this report
 
 This report is the verbatim output of the reviewer model for the patch under review, plus a verification pass run against the working tree on 2026-06-15. The verification pass downgraded the P1 finding (the regex in the file today is correct, only the styling is fragile) and confirmed all other findings.
+
+## Resolution update - 2026-06-18
+
+- [x] `_sanitize_filename` now uses the clearer pattern `r'[/\\:*?"<>|\r\n\t]+'`; `tests/test_orchestrator_file_writing.py` asserts that `r` / `n` / `t` letters are preserved while control characters are replaced.
+- [x] `_write_main_tender_files` now tolerates non-numeric chapter numbers and writes those files with `00_` prefix instead of aborting the whole draft write.
+- [x] `run_workflow` no longer contains the unused `draft_content` local.
+- [x] `materials/04_实施方案/.gitkeep` is present, preserving the documented six-category material layout.
+- [x] `_write_main_tender_files` no longer has the unused `outline` local or function-local `logging` / `re` imports.
+
+## Resolution update - 2026-06-18 follow-up review
+
+- [x] `GeneratorAgent.execute()` now returns `failed: True` for an empty outline and for consecutive chapter-failure aborts, so Orchestrator does not persist empty/aborted drafts as successful tenders. Covered by `tests/test_generator_failures.py`.
+- [x] Export download URLs now use `/api/downloads/{tender_id}/{format}`, matching the Next.js `/api/:path*` rewrite used by `web-next`. Covered by `tests/test_export_tender.py`.
+- [x] Chat export command parsing now preserves explicit PDF requests and lets `_normalize_export_format()` return the existing unsupported-PDF error instead of silently exporting Markdown. Covered by `tests/test_export_tender.py`.
+- [x] Failed review runs now persist `review_failed` instead of `reviewed` in the REST review endpoint and Orchestrator state-machine path; frontend status maps include `review_failed`. Covered by `tests/test_review_status.py`.

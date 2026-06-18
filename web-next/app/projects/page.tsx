@@ -13,6 +13,7 @@ const STATUS_STATE: Record<string, "parsing" | "parsed" | "done" | "error"> = {
   materials_preparing: "parsing",
   draft_ready: "parsed",
   reviewing: "parsing",
+  review_failed: "error",
   done: "done",
 };
 
@@ -22,6 +23,7 @@ const STATUS_LABEL: Record<string, string> = {
   materials_preparing: "材料准备",
   draft_ready: "草稿就绪",
   reviewing: "审查中",
+  review_failed: "终审失败",
   done: "完成",
 };
 

@@ -17,6 +17,7 @@ import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -97,7 +98,6 @@ class GenerateDraftRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    tender_id: int
     format: str  # "markdown" / "word" / "pdf"
 
 
@@ -162,12 +162,139 @@ def list_projects():
     ]
 
 
+def _tender_summary(tender: Tender) -> dict:
+    return {
+        "id": tender.id,
+        "type": tender.type,
+        "status": tender.status,
+        "draft_path": tender.draft_path,
+        "created_at": tender.created_at.isoformat() if tender.created_at else None,
+    }
+
+
+def _active_main_tender(session, project_id: int) -> Tender | None:
+    tenders = (
+        session.query(Tender)
+        .filter(Tender.project_id == project_id, Tender.type == "main")
+        .order_by(Tender.id.desc())
+        .all()
+    )
+    if not tenders:
+        return None
+    return next((t for t in tenders if t.draft_path), tenders[0])
+
+
+def _normalize_export_format(fmt: str) -> str:
+    value = (fmt or "word").lower().strip()
+    aliases = {
+        "docx": "word",
+        "word": "word",
+        "md": "markdown",
+        "markdown": "markdown",
+        "pdf": "pdf",
+    }
+    if value not in aliases:
+        raise HTTPException(400, "format 仅支持 word/docx、markdown/md；PDF 后置")
+    normalized = aliases[value]
+    if normalized == "pdf":
+        raise HTTPException(400, "PDF 导出暂不支持，请先导出 Word 或 Markdown")
+    return normalized
+
+
+def _export_format_from_message(msg: str) -> str:
+    if re.search(r"pdf|PDF", msg):
+        return "pdf"
+    if re.search(r"word|docx|Word|WORD", msg):
+        return "word"
+    return "markdown"
+
+
+def _markdown_to_docx(markdown: str, output_path: Path) -> None:
+    try:
+        from docx import Document
+        from docx.shared import Pt
+    except ImportError:
+        raise HTTPException(500, "python-docx 未安装，无法导出 Word")
+
+    doc = Document()
+    styles = doc.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(11)
+
+    for raw_line in markdown.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            doc.add_paragraph("")
+            continue
+        if line.startswith("# "):
+            doc.add_heading(line[2:].strip(), level=1)
+        elif line.startswith("## "):
+            doc.add_heading(line[3:].strip(), level=2)
+        elif line.startswith("### "):
+            doc.add_heading(line[4:].strip(), level=3)
+        elif line.startswith("#### "):
+            doc.add_heading(line[5:].strip(), level=4)
+        elif line.startswith("- "):
+            doc.add_paragraph(line[2:].strip(), style="List Bullet")
+        elif re.match(r"^\d+\.\s+", line):
+            doc.add_paragraph(re.sub(r"^\d+\.\s+", "", line).strip(), style="List Number")
+        elif line.strip() == "---":
+            paragraph = doc.add_paragraph()
+            paragraph.paragraph_format.space_after = Pt(6)
+        elif line.startswith(">"):
+            doc.add_paragraph(line.lstrip("> ").strip(), style="Intense Quote")
+        else:
+            doc.add_paragraph(line)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output_path)
+
+
+def _export_tender_file(tender: Tender, fmt: str) -> dict:
+    export_format = _normalize_export_format(fmt)
+    if not tender.draft_path:
+        raise HTTPException(400, "标书尚未生成 draft.md，无法导出")
+
+    draft_path = Path(tender.draft_path)
+    if not draft_path.exists():
+        raise HTTPException(404, f"draft.md 不存在: {draft_path}")
+
+    markdown = draft_path.read_text(encoding="utf-8")
+    if export_format == "markdown":
+        export_path = EXPORTS_DIR / f"tender_{tender.id}.md"
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_text(markdown, encoding="utf-8")
+        download_format = "markdown"
+    else:
+        export_path = EXPORTS_DIR / f"tender_{tender.id}.docx"
+        _markdown_to_docx(markdown, export_path)
+        download_format = "word"
+
+    return {
+        "format": export_format,
+        "export_path": str(export_path),
+        "download_url": f"/api/downloads/{tender.id}/{download_format}",
+    }
+
+
 @app.get("/projects/{project_id}")
 def get_project(project_id: int):
     session = get_session()
     project = session.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
+
+    tenders = (
+        session.query(Tender)
+        .filter(Tender.project_id == project_id)
+        .order_by(Tender.id.desc())
+        .all()
+    )
+    active_main_tender = next(
+        (t for t in tenders if t.type == "main" and t.draft_path),
+        next((t for t in tenders if t.type == "main"), None),
+    )
+
     return {
         "id": project.id,
         "name": project.name,
@@ -178,6 +305,9 @@ def get_project(project_id: int):
         "budget": project.budget,
         "deadline": project.deadline.isoformat() if project.deadline else None,
         "open_time": project.open_time.isoformat() if project.open_time else None,
+        "tender_id": active_main_tender.id if active_main_tender else None,
+        "active_main_tender_id": active_main_tender.id if active_main_tender else None,
+        "tenders": [_tender_summary(t) for t in tenders],
         # 包含已解析数据（前端 ChatView 重新进入项目时恢复解析报告）
         "parsed_data": json.loads(project.parsed_data) if project.parsed_data else None,
         # 对话历史（UIMessage[]，useChat 初始化时回填）
@@ -826,13 +956,99 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             yield ev
         return
 
+    # ---- "终审" → review ----
+    if "终审" in msg:
+        tender = _active_main_tender(session, project_id)
+        if not tender:
+            for ev in _sse_error_sync("未找到主标书，无法终审"):
+                yield ev
+            return
+        for ev in _sse_text_sync("🔍 终审检查中..."):
+            yield ev
+        orch = Orchestrator(tender_config)
+        orch.ctx.tender_id = tender.id
+        orch.ctx.tender_type = "main"
+        orch.ctx.project_id = project_id
+        review_result = orch.agents["reviewer"].execute(orch.ctx)
+        next_status = "review_failed" if review_result.get("error") else "reviewed"
+        project.status = next_status
+        tender.status = next_status
+        session.commit()
+        for ev in _sse_tool_sync(
+            "reviewTender",
+            {"tenderId": tender.id},
+            {
+                "tenderId": tender.id,
+                "checks": review_result.get("checks", []),
+                "summary": review_result.get("summary", {}),
+                "error": review_result.get("error"),
+                "message": (
+                    f"终审失败：{review_result.get('error')}"
+                    if review_result.get("error")
+                    else "终审检查完成"
+                ),
+                "action_hint": (
+                    "请先修复终审前置条件后重试"
+                    if review_result.get("error")
+                    else "要我一键修正，还是你手动处理？"
+                ),
+            },
+        ):
+            yield ev
+        for ev in _sse_finish_sync():
+            yield ev
+        return
+
+    # ---- "导出" → export ----
+    if "导出" in msg or "下载" in msg:
+        tender = _active_main_tender(session, project_id)
+        if not tender:
+            for ev in _sse_error_sync("未找到主标书，无法导出"):
+                yield ev
+                return
+        export_format = _export_format_from_message(msg)
+        try:
+            export_result = _export_tender_file(tender, export_format)
+        except HTTPException as e:
+            for ev in _sse_tool_sync(
+                "exportTender",
+                {"tenderId": tender.id, "format": export_format},
+                {
+                    "tenderId": tender.id,
+                    "format": export_format,
+                    "error": e.detail,
+                    "message": f"导出失败：{e.detail}",
+                },
+            ):
+                yield ev
+            for ev in _sse_finish_sync():
+                yield ev
+            return
+        for ev in _sse_tool_sync(
+            "exportTender",
+            {"tenderId": tender.id, "format": export_result["format"]},
+            {
+                "tenderId": tender.id,
+                **export_result,
+                "message": f"已导出为 {export_result['format']}",
+            },
+        ):
+            yield ev
+        for ev in _sse_finish_sync():
+            yield ev
+        return
+
     # 用 project.status 恢复 orch.step（避免依赖全局 .session.json）
     status_to_step = {
         "parsed": WorkflowStep.AWAIT_PARSE_CONFIRM,
         "outline_generating": WorkflowStep.AWAIT_OUTLINE_CONFIRM,
         "materials_preparing": WorkflowStep.AWAIT_CHAPTER_CONFIRM,
         "generating": WorkflowStep.AWAIT_DRAFT_CONFIRM,
+        "generated": WorkflowStep.AWAIT_DRAFT_CONFIRM,
         "reviewing": WorkflowStep.AWAIT_REVIEW_ACTION,
+        "reviewed": WorkflowStep.AWAIT_REVIEW_ACTION,
+        "review_failed": WorkflowStep.AWAIT_REVIEW_ACTION,
+        "done": WorkflowStep.AWAIT_REVIEW_ACTION,
     }
 
     orch = Orchestrator(tender_config)
@@ -850,7 +1066,7 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
     orch.step = status_to_step.get(project.status, WorkflowStep.IDLE)
 
     # "继续" 状态机的"进入动画"文案
-    if "继续" in msg:
+    if "继续" in msg or "生成" in msg:
         if project.status == "parsed":
             for ev in _sse_text_sync("📑 生成章节大纲中..."):
                 yield ev
@@ -859,6 +1075,9 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
                 yield ev
         elif project.status == "materials_preparing":
             for ev in _sse_text_sync("📝 生成标书中（多 Agent 串行，可能需要数分钟）..."):
+                yield ev
+        elif "陪标" in msg:
+            for ev in _sse_text_sync("📋 生成陪标并执行终审中..."):
                 yield ev
 
     # 让 Orchestrator 状态机处理
@@ -903,8 +1122,41 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
                 "draft_preview": result["draft_preview"],
                 "draft_path": result.get("draft_path"),
                 "draft_chapters": result.get("draft_chapters", []),
+                "errors": result.get("errors", []),
+                "failed": bool(result.get("failed")),
                 "outline": result.get("outline", []),
                 "message": message,
+            },
+        ):
+            yield ev
+        emitted_tool = True
+    if "sub_draft" in result:
+        sub_review = result.get("sub_review") or {}
+        for ev in _sse_tool_sync(
+            "generateTender",
+            {"projectId": project_id, "tenderType": "sub"},
+            {
+                "tenderId": result.get("tender_id"),
+                "draft_preview": (result.get("sub_draft") or {}).get("content", "")[:500],
+                "draft_path": result.get("draft_path"),
+                "draft_chapters": [],
+                "errors": (result.get("sub_draft") or {}).get("errors", []),
+                "failed": bool(result.get("failed")),
+                "message": message,
+            },
+        ):
+            yield ev
+        for ev in _sse_tool_sync(
+            "reviewTender",
+            {"tenderId": result.get("tender_id"), "tenderType": "sub"},
+            {
+                "tenderId": result.get("tender_id"),
+                "tenderType": "sub",
+                "checks": sub_review.get("checks", []),
+                "summary": sub_review.get("summary", {}),
+                "error": sub_review.get("error"),
+                "retries": result.get("retries", 0),
+                "message": "陪标终审完成",
             },
         ):
             yield ev
@@ -917,111 +1169,6 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
     for ev in _sse_finish_sync():
         yield ev
     return
-
-    # ---- "生成" → generate ----
-    if "生成" in msg:
-        session = get_session()
-        project = session.get(Project, project_id)
-        if not project:
-            for ev in _sse_error_sync("项目不存在"):
-                yield ev
-            return
-        for ev in _sse_text_sync("📝 正在生成标书（多 Agent 串行，可能需要数分钟）..."):
-            yield ev
-        # 实际生成交给线程（这里简单同步执行；后续可改成 worker thread + queue）
-        orch = Orchestrator(tender_config)
-        result = orch.run_workflow(project_id=project_id, tender_type="main", need_sub_bid=False)
-        if "error" in result:
-            for ev in _sse_error_sync(result["error"]):
-                yield ev
-            return
-        for ev in _sse_tool_sync(
-            "generateTender",
-            {"projectId": project_id, "tenderType": "main"},
-            {
-                "parsed": result.get("parsed"),
-                "matches": result.get("matches"),
-                "draft": result.get("draft"),
-                "main_review": result.get("main_review"),
-                "message": "标书生成完成",
-            },
-        ):
-            yield ev
-        for ev in _sse_finish_sync():
-            yield ev
-        return
-
-    # ---- "终审" → review ----
-    if "终审" in msg:
-        session = get_session()
-        tender = session.query(Tender).filter_by(project_id=project_id, type="main").first()
-        if not tender:
-            for ev in _sse_error_sync("未找到主标书，无法终审"):
-                yield ev
-            return
-        for ev in _sse_text_sync("🔍 终审检查中..."):
-            yield ev
-        orch = Orchestrator(tender_config)
-        orch.ctx.tender_id = tender.id
-        orch.ctx.tender_type = "main"
-        orch.ctx.project_id = project_id
-        review_result = orch.agents["reviewer"].execute(orch.ctx)
-        for ev in _sse_tool_sync(
-            "reviewTender",
-            {"tenderId": tender.id},
-            {
-                "tenderId": tender.id,
-                "report": {c["check_id"]: {"status": c["status"], "issues": [c["issue"]] if c["issue"] else []}
-                            for c in review_result.get("checks", [])},
-                "summary": review_result.get("summary", {}),
-                "message": f"终审检查完成",
-                "action_hint": "要我一键修正，还是你手动处理？",
-            },
-        ):
-            yield ev
-        for ev in _sse_finish_sync():
-            yield ev
-        return
-
-    # ---- "导出" → export ----
-    if "导出" in msg or "下载" in msg:
-        session = get_session()
-        tender = session.query(Tender).filter_by(project_id=project_id, type="main").first()
-        if not tender:
-            for ev in _sse_error_sync("未找到主标书，无法导出"):
-                yield ev
-            return
-        # 默认 markdown
-        export_path = EXPORTS_DIR / f"tender_{tender.id}.md"
-        for ev in _sse_tool_sync(
-            "exportTender",
-            {"tenderId": tender.id, "format": "markdown"},
-            {
-                "tenderId": tender.id,
-                "format": "markdown",
-                "export_path": str(export_path),
-                "download_url": f"/downloads/{tender.id}/markdown",
-                "message": "已导出为 markdown",
-            },
-        ):
-            yield ev
-        for ev in _sse_finish_sync():
-            yield ev
-        return
-
-    # ---- 默认：帮助 ----
-    help_text = (
-        "我理解这些指令：\n"
-        "• 「放好了」— 开始解析招标文件\n"
-        "• 「继续」— 进入材料匹配\n"
-        "• 「生成」— 生成标书\n"
-        "• 「终审」— 终审检查\n"
-        "• 「导出」— 导出标书"
-    )
-    for ev in _sse_text_sync(help_text):
-        yield ev
-    for ev in _sse_finish_sync():
-        yield ev
 
 
 @app.post("/projects/{project_id}/chat")
@@ -1099,6 +1246,8 @@ def confirm_parse(project_id: int, req: TenderParseConfirmRequest):
 
     # 一次性调用（Web 跳过中间确认步骤）
     match_result = orch.agents["matcher"].execute(orch.ctx)
+    orch.ctx.parsed_data["_confirmed_outline"] = match_result.get("outline", [])
+    orch.ctx.parsed_data["chapters"] = match_result.get("chapters", [])
 
     project.parsed_data = json.dumps(orch.ctx.parsed_data, ensure_ascii=False)
     session.commit()
@@ -1207,16 +1356,16 @@ def list_tender_files(project_id: int, tender_id: int):
     session = get_session()
     project = session.get(Project, project_id)
     tender = session.get(Tender, tender_id)
-    if not project or not tender:
+    if not project or not tender or tender.project_id != project_id:
         raise HTTPException(404, "项目或标书不存在")
     if not tender.draft_path:
         return {"tender_id": tender_id, "type": tender.type,
-                "root": "", "folders": [], "files": []}
+                "root": "", "folders": [], "top_files": []}
 
     main_dir = Path(tender.draft_path).parent
     if not main_dir.exists():
         return {"tender_id": tender_id, "type": tender.type,
-                "root": str(main_dir), "folders": [], "files": []}
+                "root": str(main_dir), "folders": [], "top_files": []}
 
     folders: list[dict] = []
     top_files: list[dict] = []
@@ -1285,7 +1434,7 @@ def read_tender_file(project_id: int, tender_id: int, file_path: str):
     session = get_session()
     project = session.get(Project, project_id)
     tender = session.get(Tender, tender_id)
-    if not project or not tender:
+    if not project or not tender or tender.project_id != project_id:
         raise HTTPException(404, "项目或标书不存在")
     if not tender.draft_path:
         raise HTTPException(404, "标书未生成文件")
@@ -1302,7 +1451,6 @@ def read_tender_file(project_id: int, tender_id: int, file_path: str):
     if target.suffix.lower() != ".md":
         raise HTTPException(400, "仅支持 .md 文件")
 
-    from fastapi.responses import PlainTextResponse
     return PlainTextResponse(
         target.read_text(encoding="utf-8"),
         media_type="text/markdown; charset=utf-8",
@@ -1321,6 +1469,11 @@ def match_materials(project_id: int, tender_type: str = "main"):
     orch.ctx.project_id = project_id
     orch.ctx.tender_type = tender_type
     orch.ctx.parsed_data = json.loads(project.parsed_data) if project.parsed_data else {}
+    orch.ctx.outline = (
+        orch.ctx.parsed_data.get("_confirmed_outline")
+        or orch.ctx.parsed_data.get("_generated_outline")
+        or []
+    )
 
     # 兜底：没有 outline 就先生成
     if not orch.ctx.outline:
@@ -1328,8 +1481,11 @@ def match_materials(project_id: int, tender_type: str = "main"):
         orch.ctx.outline = outline_result.get("outline", [])
 
     match_result = orch.agents["matcher"].match_materials(orch.ctx)
+    orch.ctx.parsed_data["_confirmed_outline"] = orch.ctx.outline
+    orch.ctx.parsed_data["chapters"] = match_result.get("chapters", [])
 
     project.parsed_data = json.dumps(orch.ctx.parsed_data, ensure_ascii=False)
+    project.status = "materials_preparing"
     session.commit()
 
     return {
@@ -1355,14 +1511,29 @@ def review_tender(tender_id: int):
     review_result = orch.agents["reviewer"].execute(orch.ctx)
     checks = review_result.get("checks", [])
     summary = review_result.get("summary", {})
+    project = session.get(Project, tender.project_id)
+    next_status = "review_failed" if review_result.get("error") else "reviewed"
+    if project:
+        project.status = next_status
+    tender.status = next_status
+    session.commit()
 
+    review_error = review_result.get("error")
     return {
         "tender_id": tender_id,
-        "report": {c["check_id"]: {"status": c["status"], "issues": [c["issue"]] if c["issue"] else []}
-                    for c in checks},
+        "checks": checks,
         "summary": summary,
-        "message": f"终审检查完成，发现 {summary.get('medium', 0)} 个警告项",
-        "action_hint": "要我一键修正，还是你手动处理？"
+        "error": review_error,
+        "message": (
+            f"终审失败：{review_error}"
+            if review_error
+            else f"终审检查完成，发现 {summary.get('medium', 0)} 个警告项"
+        ),
+        "action_hint": (
+            "请先修复终审前置条件后重试"
+            if review_error
+            else "要我一键修正，还是你手动处理？"
+        )
     }
 
 
@@ -1374,13 +1545,27 @@ def export_tender(tender_id: int, req: ExportRequest):
     if not tender:
         raise HTTPException(404, "标书不存在")
 
-    export_path = EXPORTS_DIR / f"tender_{tender_id}.{req.format}"
+    result = _export_tender_file(tender, req.format)
 
     return {
-        "message": f"已导出为 {req.format}",
-        "export_path": str(export_path),
-        "download_url": f"/downloads/{tender_id}/{req.format}"
+        "message": f"已导出为 {result['format']}",
+        **result,
     }
+
+
+@app.get("/downloads/{tender_id}/{fmt}")
+def download_export(tender_id: int, fmt: str):
+    export_format = _normalize_export_format(fmt)
+    suffix = "docx" if export_format == "word" else "md"
+    path = EXPORTS_DIR / f"tender_{tender_id}.{suffix}"
+    if not path.exists():
+        raise HTTPException(404, "导出文件不存在，请先导出")
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if export_format == "word"
+        else "text/markdown; charset=utf-8"
+    )
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 if __name__ == "__main__":

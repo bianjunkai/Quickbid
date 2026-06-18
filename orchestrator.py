@@ -3,13 +3,14 @@ Orchestrator — Agent 编排器
 状态机 + Agent 调度 + 上下文管理。CLI 和 API 共用。
 """
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from agents.base import AgentContext
-from agents.bid_parser.schema import k_field_value
+from agents.bid_parser.schema import k_field_items_with_pages, k_field_value
 from agents.parser_agent import ParserAgent
 from agents.matcher_agent import MatcherAgent
 from agents.generator_agent import GeneratorAgent
@@ -17,6 +18,8 @@ from agents.reviewer_agent import ReviewerAgent
 from agents.subbid_agent import SubBidAgent
 from agents.qa_agent import QAAgent
 from models import init_db, get_session, Project, Tender
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowStep(str):
@@ -136,6 +139,11 @@ class Orchestrator:
 
         # Step 3: 生成主标
         gen_result = self.agents["generator"].execute(self.ctx)
+        if gen_result.get("failed"):
+            return {
+                "error": "主标生成失败：" + "；".join(gen_result.get("errors", [])),
+                "draft": gen_result,
+            }
 
         # 创建 Tender 记录
         tender = Tender(project_id=project_id, type="main", status="draft")
@@ -153,15 +161,33 @@ class Orchestrator:
         self.ctx.tender_type = "main"
         main_review = self.agents["reviewer"].execute(self.ctx)
 
-        tender.status = "reviewing"
+        tender.status = "review_failed" if main_review.get("error") else "reviewed"
         session.commit()
 
         # Step 5: 陪标（可选）
         sub_result = None
         sub_review = None
         if need_sub_bid:
+            main_tender_id = tender.id
             self.ctx.tender_type = "sub"
+            self.ctx.tender_id = main_tender_id
             sub_result = self.agents["subbid"].execute(self.ctx)
+            if sub_result.get("failed"):
+                return {
+                    "error": "陪标生成失败：" + "；".join(sub_result.get("errors", [])),
+                    "parsed": parse_result,
+                    "matches": match_result,
+                    "draft": gen_result,
+                    "main_review": main_review,
+                    "sub_draft": sub_result,
+                }
+
+            sub_tender = Tender(project_id=project_id, type="sub", status="draft")
+            session.add(sub_tender)
+            session.commit()
+            session.refresh(sub_tender)
+            self.ctx.tender_id = sub_tender.id
+            self._write_sub_tender_files(project, sub_tender, sub_result, self.ctx.parsed_data or {})
 
             # 陪标必须经过 Reviewer 审查
             sub_review = self.agents["reviewer"].execute(self.ctx)
@@ -169,19 +195,26 @@ class Orchestrator:
                              if c["status"] == "fail")
             retry = 0
             while fail_count > 0 and retry < 2:
+                self.ctx.tender_id = main_tender_id
                 sub_result = self.agents["subbid"].execute(self.ctx,
                                                            fix_issues=sub_review)
+                if sub_result.get("failed"):
+                    break
+                self.ctx.tender_id = sub_tender.id
+                self._write_sub_tender_files(
+                    project, sub_tender, sub_result, self.ctx.parsed_data or {}
+                )
                 sub_review = self.agents["reviewer"].execute(self.ctx)
                 fail_count = sum(1 for c in sub_review.get("checks", [])
                                  if c["status"] == "fail")
                 retry += 1
 
-            # 保存陪标
-            sub_tender = Tender(project_id=project_id, type="sub", status="draft")
-            session.add(sub_tender)
+            sub_tender.status = "reviewed" if fail_count == 0 else "review_failed"
             session.commit()
 
-        project.status = "done"
+        main_review_failed = bool(main_review.get("error"))
+        sub_failed = bool(sub_review and sub_review.get("summary", {}).get("high", 0) > 0)
+        project.status = "review_failed" if main_review_failed else "reviewed" if sub_failed else "done"
         session.commit()
 
         return {
@@ -332,6 +365,7 @@ class Orchestrator:
 
         # 标记提纲已确认 + 持久化
         self.ctx.parsed_data["_confirmed_outline"] = self.ctx.outline
+        self.ctx.parsed_data["chapters"] = chapters
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
         if project:
@@ -345,7 +379,7 @@ class Orchestrator:
 
         # 检查空材料库
         empty_warn = ""
-        if not chapters or all(c.get("material_id") is None for c in chapters):
+        if not chapters or all(not c.get("file_path") for c in chapters):
             empty_warn = "⚠️ 材料库为空，所有章节标记为「需新建」\n\n"
 
         lines = [empty_warn + "📚 材料匹配结果："]
@@ -374,7 +408,7 @@ class Orchestrator:
         }
 
     def _handle_await_chapter_confirm(self, msg: str) -> dict[str, Any]:
-        if re.search(r"继续|确认|可以|好的", msg):
+        if re.search(r"继续|确认|可以|好的|生成", msg):
             return self._start_generation()
         if re.search(r"换|替换|换一个", msg):
             return {"message": "好的，已重新推荐了另一个材料，请确认是否合适"}
@@ -393,9 +427,9 @@ class Orchestrator:
 
     def _handle_await_review_action(self, msg: str) -> dict[str, Any]:
         if re.search(r"自动修正|自动修", msg):
-            return {"message": ("✅ 已自动修正一致性问题\n"
-                                "• 第3章工期已统一为8个月\n\n"
-                                "现在可以导出了：\n「导出Word」 / 「导出PDF」")}
+            return {"message": ("MVP 阶段暂不做自动 patch。\n"
+                                "请按终审建议人工修改，或说明要重新生成的章节，例如："
+                                "「重新生成第3章，统一工期为8个月」。")}
         if re.search(r"导出|word|pdf", msg.lower()):
             return self._do_export(msg)
         if "陪标" in msg:
@@ -473,6 +507,17 @@ class Orchestrator:
         self.step = WorkflowStep.AWAIT_DRAFT_CONFIRM
 
         gen_result = self.agents["generator"].execute(self.ctx)
+        if gen_result.get("failed"):
+            errors = gen_result.get("errors", [])
+            return {
+                "message": "⚠️ 主标生成失败：" + ("；".join(errors) if errors else "未知错误"),
+                "draft_preview": "",
+                "draft_path": "",
+                "draft_chapters": [],
+                "outline": gen_result.get("outline", []),
+                "errors": errors,
+                "failed": True,
+            }
 
         # 创建 Tender 记录
         session = get_session()
@@ -488,7 +533,8 @@ class Orchestrator:
         draft_path = self._write_main_tender_files(
             project, tender, gen_result, self.ctx.parsed_data or {}
         )
-        project.status = "generating"
+        project.status = "generated"
+        tender.status = "generated"
         session.commit()
 
         chapters = gen_result.get("chapters", [])
@@ -515,6 +561,17 @@ class Orchestrator:
         checks = review_result.get("checks", [])
         summary = review_result.get("summary", {})
 
+        session = get_session()
+        project = session.get(Project, self.ctx.project_id)
+        next_status = "review_failed" if review_result.get("error") else "reviewed"
+        if project:
+            project.status = next_status
+        if self.ctx.tender_id:
+            tender = session.get(Tender, self.ctx.tender_id)
+            if tender:
+                tender.status = next_status
+        session.commit()
+
         lines = ["🔍 终审检查报告：\n"]
         for c in checks:
             icon = {"pass": "✅", "warning": "⚠️", "fail": "❌"}.get(c["status"], "❓")
@@ -535,8 +592,36 @@ class Orchestrator:
 
     def _generate_subbid(self) -> dict[str, Any]:
         """生成陪标 → 自动送入 Reviewer 审查。最多 2 次重试。"""
+        session = get_session()
+        project = session.get(Project, self.ctx.project_id)
+        if not project:
+            return {"message": "⚠️ 项目不存在", "failed": True}
+
+        main_tender = (
+            session.query(Tender)
+            .filter(Tender.project_id == self.ctx.project_id, Tender.type == "main")
+            .order_by(Tender.id.desc())
+            .all()
+        )
+        main_tender = next((t for t in main_tender if t.draft_path), main_tender[0] if main_tender else None)
+        if not main_tender:
+            return {"message": "⚠️ 未找到可用主标，无法生成陪标", "failed": True}
+
         self.ctx.tender_type = "sub"
+        self.ctx.tender_id = main_tender.id
         sub_result = self.agents["subbid"].execute(self.ctx)
+        if sub_result.get("failed"):
+            errors = "；".join(sub_result.get("errors", [])) or "未知错误"
+            return {"message": f"⚠️ 陪标生成失败：{errors}", "failed": True, "errors": sub_result.get("errors", [])}
+
+        sub_tender = Tender(project_id=self.ctx.project_id, type="sub", status="draft")
+        session.add(sub_tender)
+        session.commit()
+        session.refresh(sub_tender)
+        self.ctx.tender_id = sub_tender.id
+        draft_path = self._write_sub_tender_files(
+            project, sub_tender, sub_result, self.ctx.parsed_data or {}
+        )
 
         # 自动审查
         sub_review = self.agents["reviewer"].execute(self.ctx)
@@ -544,16 +629,21 @@ class Orchestrator:
                          if c["status"] == "fail")
         retry = 0
         while fail_count > 0 and retry < 2:
+            self.ctx.tender_id = main_tender.id
             sub_result = self.agents["subbid"].execute(self.ctx, fix_issues=sub_review)
+            if sub_result.get("failed"):
+                break
+            self.ctx.tender_id = sub_tender.id
+            draft_path = self._write_sub_tender_files(
+                project, sub_tender, sub_result, self.ctx.parsed_data or {}
+            )
             sub_review = self.agents["reviewer"].execute(self.ctx)
             fail_count = sum(1 for c in sub_review.get("checks", [])
                              if c["status"] == "fail")
             retry += 1
 
-        # 保存陪标 Tender 记录
-        session = get_session()
-        sub_tender = Tender(project_id=self.ctx.project_id, type="sub", status="draft")
-        session.add(sub_tender)
+        sub_tender.status = "reviewed" if fail_count == 0 else "review_failed"
+        project.status = "done" if fail_count == 0 else "reviewed"
         session.commit()
 
         review_summary = sub_review.get("summary", {})
@@ -566,10 +656,19 @@ class Orchestrator:
         lines.append("\n「导出Word」/ 「导出PDF」")
 
         return {"message": "\n".join(lines),
-                "sub_review": sub_review, "retries": retry}
+                "sub_draft": sub_result,
+                "sub_review": sub_review,
+                "retries": retry,
+                "tender_id": sub_tender.id,
+                "draft_path": draft_path}
 
     def _do_export(self, msg: str) -> dict[str, Any]:
         fmt = "word" if "word" in msg.lower() else "pdf" if "pdf" in msg.lower() else "word"
+        if fmt == "pdf":
+            return {
+                "message": "⚠️ PDF 导出暂不支持，请先导出 Word 或 Markdown",
+                "error": "PDF 导出暂不支持",
+            }
         exports_dir = Path(self.config.get("exports_dir", "./exports"))
         export_path = exports_dir / f"tender_{self.ctx.project_id}.{fmt}"
 
@@ -665,11 +764,10 @@ class Orchestrator:
                     ch.get("content", "") or "", encoding="utf-8"
                 )
 
-            # 4) deviation.md（占位,DeviationAgent 后续生成）
-            (main_dir / "deviation.md").write_text(
-                "# 商务/技术条款偏离表\n\n"
-                "> 本节由 DeviationAgent 后续生成,占位中。\n"
-                "> 一般会要两套:商务条款偏离表（05_商务文件）+ 技术条款偏离表（03_技术方案）。\n",
+            # 4) deviation.md（基于解析字段生成）
+            deviation_path = main_dir / "deviation.md"
+            deviation_path.write_text(
+                self._build_deviation_markdown(parsed, tender_type="main"),
                 encoding="utf-8",
             )
 
@@ -678,6 +776,7 @@ class Orchestrator:
             t = session.get(Tender, tender.id)
             if t:
                 t.draft_path = str(draft_path)
+                t.deviation_path = str(deviation_path)
                 session.commit()
 
             return str(draft_path)
@@ -685,6 +784,157 @@ class Orchestrator:
             # 写文件失败不能阻塞主流程
             logger.warning("写主标文件失败: %s", e)
             return ""
+
+    def _write_sub_tender_files(
+        self,
+        project,
+        tender,
+        sub_result: dict[str, Any],
+        parsed: dict[str, Any],
+    ) -> str:
+        """把陪标生成结果写到 projects/{ts}_{name}/sub/ 目录,落库 draft_path。"""
+        if not project or not project.tender_file_path:
+            return ""
+        try:
+            project_dir = Path(project.tender_file_path).parent
+            sub_dir = project_dir / "sub"
+            sub_dir.mkdir(parents=True, exist_ok=True)
+
+            content = sub_result.get("content", "") or ""
+            k01 = k_field_value(parsed.get("K01_项目名称")) or project.name
+            cover_path = sub_dir / "cover.md"
+            draft_path = sub_dir / "draft.md"
+            deviation_path = sub_dir / "deviation.md"
+
+            cover_path.write_text(
+                "\n".join([
+                    f"# {k01} — 投标文件（陪标）",
+                    "",
+                    "## 文件说明",
+                    "",
+                    "- **标书类型**: 陪标",
+                    f"- **项目名称**: {k01}",
+                    "",
+                    "## 文件清单",
+                    "",
+                    "- draft.md",
+                    "- deviation.md",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            draft_path.write_text(content, encoding="utf-8")
+            deviation_path.write_text(
+                self._build_deviation_markdown(parsed, tender_type="sub"),
+                encoding="utf-8",
+            )
+
+            session = get_session()
+            t = session.get(Tender, tender.id)
+            if t:
+                t.draft_path = str(draft_path)
+                t.deviation_path = str(deviation_path)
+                session.commit()
+
+            return str(draft_path)
+        except Exception as e:
+            logger.warning("写陪标文件失败: %s", e)
+            return ""
+
+    def _build_deviation_markdown(
+        self,
+        parsed: dict[str, Any],
+        tender_type: str,
+    ) -> str:
+        """基于 K 字段生成商务/技术条款偏离表 Markdown。"""
+        project_name = k_field_value(parsed.get("K01_项目名称")) or "招标项目"
+        tender_label = "主标" if tender_type == "main" else "陪标"
+        format_req = k_field_value(parsed.get("K13_偏离表格式要求")) or "按招标文件要求填写"
+        business_reqs = self._deviation_items(parsed.get("K09_商务资质要求"))
+        tech_reqs = self._deviation_items(parsed.get("K08_技术要求"))
+        star_items = [
+            item for item, _page in k_field_items_with_pages(parsed.get("K10_星标项"))
+        ]
+
+        lines = [
+            f"# {project_name} — 商务/技术条款偏离表（{tender_label}）",
+            "",
+            "## 偏离表格式要求",
+            "",
+            str(format_req),
+            "",
+            "## 商务条款偏离表",
+            "",
+            "| 序号 | 招标条款/要求 | 投标响应 | 偏离情况 | 说明 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        if business_reqs:
+            for idx, item in enumerate(business_reqs[:12], 1):
+                lines.append(
+                    f"| {idx} | {self._table_cell(item)} | 完全响应 | 无偏离 | 按招标文件及商务资质材料响应 |"
+                )
+        else:
+            lines.append("| 1 | 商务资质、授权、服务承诺等商务条款 | 完全响应 | 无偏离 | 以招标文件和投标文件商务章节为准 |")
+
+        lines.extend([
+            "",
+            "## 技术条款偏离表",
+            "",
+            "| 序号 | 招标技术要求 | 投标响应 | 偏离情况 | 说明 |",
+            "| --- | --- | --- | --- | --- |",
+        ])
+        combined_tech = tech_reqs[:10]
+        for item in star_items:
+            if item not in combined_tech:
+                combined_tech.append(item)
+        if combined_tech:
+            for idx, item in enumerate(combined_tech[:15], 1):
+                lines.append(
+                    f"| {idx} | {self._table_cell(item)} | 完全响应 | 无偏离 | 技术方案章节已响应 |"
+                )
+        else:
+            lines.append("| 1 | 医院信息化系统建设技术要求 | 完全响应 | 无偏离 | 以投标文件技术方案为准 |")
+
+        lines.extend([
+            "",
+            "## 废标/星标项自查",
+            "",
+            "| 序号 | 关键项 | 响应情况 | 说明 |",
+            "| --- | --- | --- | --- |",
+        ])
+        if star_items:
+            for idx, item in enumerate(star_items[:12], 1):
+                lines.append(
+                    f"| {idx} | {self._table_cell(item)} | 已响应 | 已在正文对应章节响应 |"
+                )
+        else:
+            lines.append("| 1 | 招标文件关键要求 | 已响应 | 未解析到独立星标项，按全文要求响应 |")
+
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _deviation_items(field: Any) -> list[str]:
+        value = k_field_value(field)
+        if not value:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        text = str(value)
+        items = []
+        for raw in re.split(r"[\n；;]+", text):
+            item = raw.strip(" -•\t")
+            if item:
+                items.append(item)
+        return items or [text.strip()]
+
+    @staticmethod
+    def _table_cell(value: str, max_len: int = 120) -> str:
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        text = text.replace("|", "\\|")
+        if len(text) > max_len:
+            text = text[:max_len] + "..."
+        return text
 
     @staticmethod
     def _sanitize_filename(name: str, max_len: int = 50) -> str:
@@ -850,7 +1100,7 @@ class Orchestrator:
                             f"阶段：{self.step}")}
 
     def _export_options_text(self) -> str:
-        return "📤 导出格式：\n• 「导出Word」- 生成 .docx 文件\n• 「导出PDF」- 生成 .pdf 文件"
+        return "📤 导出格式：\n• 「导出Word」- 生成 .docx 文件\n• PDF 导出暂不支持"
 
     def _help_text(self) -> str:
         return ("你好！我是标书制作助手。\n\n"
@@ -861,7 +1111,7 @@ class Orchestrator:
                 "• 「继续」- 从上一步继续\n"
                 "• 「终审」- 执行终审检查\n"
                 "• 「导出Word」- 导出Word文件\n"
-                "• 「导出PDF」- 导出PDF文件")
+                "• PDF 导出暂不支持")
 
     # ================================================================
     # 会话持久化
