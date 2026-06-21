@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 import { Sidebar } from "@/components/sidebar";
 import { ChatThread } from "@/components/chat-thread";
 import { MarkdownViewer } from "@/components/markdown-viewer";
+import { useRouter } from "next/navigation";
 
 export default function ProjectChatPage({
   params,
@@ -54,6 +55,7 @@ function MarkdownViewerWrapper({
   tenderParam: number | null;
   filePath: string;
 }) {
+  const router = useRouter();
   const [tenderId, setTenderId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -69,8 +71,7 @@ function MarkdownViewerWrapper({
   }, [projectId, tenderParam]);
 
   const handleClose = () => {
-    window.history.pushState({}, "", `/projects/${projectId}`);
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    router.replace(`/projects/${projectId}`, { scroll: false });
   };
 
   if (!tenderId) {

@@ -209,6 +209,22 @@ def _export_format_from_message(msg: str) -> str:
     return "markdown"
 
 
+def _should_start_parse_from_message(msg: str, project_status: str | None = None) -> bool:
+    """Return True when a chat message is asking to parse the uploaded tender file."""
+    text = (msg or "").strip()
+    if not text:
+        return False
+    if re.search(r"重新解析|重跑解析|重新分析招标", text, re.IGNORECASE):
+        return True
+    if project_status != "parsing":
+        return False
+    if re.search(r"放好了|开始解析|解析招标|识别招标|分析招标|读取招标", text, re.IGNORECASE):
+        return True
+    mentions_file = re.search(r"上传|文件|招标文件|标书|pdf|docx|附件", text, re.IGNORECASE)
+    asks_action = re.search(r"好了|完成|完了|开始|处理|看看|看一下|分析|识别|读取|继续", text)
+    return bool(mentions_file and asks_action)
+
+
 def _markdown_to_docx(markdown: str, output_path: Path) -> None:
     try:
         from docx import Document
@@ -384,7 +400,7 @@ async def upload_tender(project_id: int, file: UploadFile = File(...)):
     session.commit()
 
     return {
-        "message": "上传成功，请输入「放好了」开始解析",
+        "message": "上传成功，可以直接说“开始解析招标文件”或描述“文件已上传，请帮我分析”。",
         "file_path": str(base),
         "file_size": len(content),
         "filename": safe_name,
@@ -935,8 +951,15 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
     """
     msg = last_user_msg.strip()
 
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        for ev in _sse_error_sync("项目不存在"):
+            yield ev
+        return
+
     # ---- "放好了" → parse ----
-    if "放好了" in msg or "解析" in msg:
+    if _should_start_parse_from_message(msg, project.status):
         for ev in _sse_text_sync("🔍 收到，开始解析..."):
             yield ev
         async for ev in _run_parse_sse(project_id, "full"):
@@ -949,13 +972,6 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
     #              AWAIT_CHAPTER_CONFIRM → generate → AWAIT_DRAFT_CONFIRM
     # handler 返回 dict 里有 outline / chapters / draft_preview 键就发对应 tool 事件
     # 上面分支已 return（parse / generate / review / export 走一次性路径），下面就是状态机入口
-    session = get_session()
-    project = session.get(Project, project_id)
-    if not project:
-        for ev in _sse_error_sync("项目不存在"):
-            yield ev
-        return
-
     # ---- "终审" → review ----
     if "终审" in msg:
         tender = _active_main_tender(session, project_id)

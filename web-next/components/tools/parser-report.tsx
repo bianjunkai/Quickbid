@@ -7,7 +7,7 @@ import { Schema } from "./parser-schema";
 
 const TABS = [
   { id: "k", label: "K01–K14", icon: Layers, num: "01" },
-  { id: "markers", label: "标记", icon: BarChart3, num: "02" },
+  { id: "markers", label: "标记统计", icon: BarChart3, num: "02" },
   { id: "risks", label: "风险", icon: AlertTriangle, num: "03" },
   { id: "schema", label: "数据", icon: FileCode2, num: "04" },
 ] as const;
@@ -293,7 +293,7 @@ function Risks({ data }: { data: any }) {
         return (
           <details
             key={g.key}
-            open={g.key === "fatal_items"}
+            open={g.key === "fatal_items" || g.key === "critical_items" || g.key === "high_items"}
             className="card-soft overflow-hidden group"
           >
             <summary className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--color-paper-warm)] transition-colors list-none">
@@ -305,34 +305,96 @@ function Risks({ data }: { data: any }) {
               <span className="text-[12px] text-[var(--color-ink-mute)]">· {items.length} 项</span>
             </summary>
             <div className="border-t border-[var(--color-border)] divide-y divide-[var(--color-border)]">
-              {items.map((it: any, i: number) => (
-                <div key={i} className="px-4 py-3">
-                  <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-ink-mute)] font-mono">
-                    <span className="text-[var(--color-primary)] font-semibold">{it.marker}</span>
-                    {it.source_page && (
-                      <>
-                        <span>·</span>
-                        <span>P{String(it.source_page).padStart(3, "0")}</span>
-                      </>
+              {items.map((it: any, i: number) => {
+                const riskText = readRiskText(it);
+                const meta = readRiskMeta(it);
+                return (
+                  <div key={i} className="px-4 py-3">
+                    <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-ink-mute)] font-mono flex-wrap">
+                      {it.marker && (
+                        <span className="text-[var(--color-primary)] font-semibold">{it.marker}</span>
+                      )}
+                      {it.source_page && (
+                        <>
+                          <span>·</span>
+                          <span>P{String(it.source_page).padStart(3, "0")}</span>
+                        </>
+                      )}
+                      {it.semantic && (
+                        <>
+                          <span>·</span>
+                          <span className="text-[var(--color-ink-soft)]">{it.semantic}</span>
+                        </>
+                      )}
+                    </div>
+                    {meta.length > 0 && (
+                      <div className="mb-2 flex flex-wrap gap-1.5">
+                        {meta.map((m) => (
+                          <span
+                            key={m.label}
+                            className="inline-flex max-w-full items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[10px] text-[var(--color-ink-mute)]"
+                            title={m.value}
+                          >
+                            <span className="font-medium text-[var(--color-ink-soft)]">{m.label}</span>
+                            <span className="truncate max-w-[240px]">{m.value}</span>
+                          </span>
+                        ))}
+                      </div>
                     )}
-                    {it.semantic && (
-                      <>
-                        <span>·</span>
-                        <span className="text-[var(--color-ink-soft)]">{it.semantic}</span>
-                      </>
-                    )}
+                    <pre className="text-[12px] text-[var(--color-ink)] font-mono whitespace-pre-wrap break-words leading-[1.7] bg-[var(--color-paper-warm)] p-3 rounded-lg overflow-x-auto">
+                      {riskText || "未返回原文，可在“数据”页查看完整解析 JSON。"}
+                    </pre>
                   </div>
-                  <pre className="text-[12px] text-[var(--color-ink)] font-mono whitespace-pre-wrap leading-[1.7] bg-[var(--color-paper-warm)] p-3 rounded-lg">
-                    {it.raw_text}
-                  </pre>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </details>
         );
       })}
     </div>
   );
+}
+
+function readRiskText(item: any): string {
+  const candidates = [
+    item?.raw_text,
+    item?.original_text,
+    item?.source_text,
+    item?.condition,
+    item?.requirement,
+    item?.content,
+    item?.text,
+    item?.description,
+    item?.semantic,
+  ];
+  for (const value of candidates) {
+    const text = stringifyRiskValue(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function readRiskMeta(item: any): Array<{ label: string; value: string }> {
+  const fields: Array<[string, any]> = [
+    ["映射", item?.maps_to_field ?? item?.target_field ?? item?.field],
+    ["类型", item?.type ?? item?.risk_type],
+    ["严重度", item?.severity ?? item?.priority],
+    ["条款", item?.clause_no ?? item?.clause],
+  ];
+  return fields
+    .map(([label, value]) => ({ label, value: stringifyRiskValue(value) }))
+    .filter((entry) => entry.value);
+}
+
+function stringifyRiskValue(value: any): string {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function Stat({ label, value, state }: { label: string; value: number | string; state?: "done" | "warning" | "error" }) {

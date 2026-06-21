@@ -253,8 +253,13 @@ class Orchestrator:
         return self._create_project(msg)
 
     def _handle_await_tender_file(self, msg: str) -> dict[str, Any]:
-        if not re.search(r"放好了|上传了|好了", msg):
-            return {"message": "请把招标文件放到指定路径，然后说「放好了」"}
+        if not re.search(r"放好了|上传了|好了|开始|解析|处理|看看|看一下|分析|识别|读取|文件|标书", msg):
+            return {
+                "message": (
+                    "请把招标文件放到指定路径，然后告诉我文件已准备好。"
+                    "例如：“文件上传好了，请开始解析”。"
+                )
+            }
 
         session = get_session()
         project = session.get(Project, self.ctx.project_id)
@@ -464,7 +469,7 @@ class Orchestrator:
                         f"📁 项目目录：{project_dir}\n\n"
                         f"请将招标文件（PDF 或 DOCX）放到以下路径：\n"
                         f"`{tender_path}`\n\n"
-                        f"放好后告诉我「放好了」，我立即开始解析。"),
+                        f"放好后直接描述“文件已上传，请开始解析”，我立即开始解析。"),
             "project_id": project.id,
             "tender_path": str(tender_path),
         }

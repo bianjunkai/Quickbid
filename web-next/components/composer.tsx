@@ -5,7 +5,7 @@ import { Paperclip, Send, Square, Plus, AtSign } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const QUICK_REPLIES: Record<string, string[]> = {
-  parsing: ["放好了"],
+  parsing: ["开始解析招标文件"],
   parsed: ["继续"],
   outline_generating: ["继续"],
   materials_preparing: ["生成"],
@@ -17,7 +17,7 @@ const QUICK_REPLIES: Record<string, string[]> = {
 };
 
 const QUICK_REPLY_DESC: Record<string, string> = {
-  放好了: "开始解析招标文件",
+  开始解析招标文件: "读取并分析已上传的招标文件",
   继续: "进入材料匹配",
   生成: "生成主标书",
   生成陪标: "生成陪标并自动终审",
@@ -54,7 +54,7 @@ export function Composer({
     setInput("");
   };
 
-  const replies = QUICK_REPLIES[status] || ["放好了", "继续", "生成", "终审", "导出"];
+  const replies = QUICK_REPLIES[status] || ["开始解析招标文件", "继续", "生成", "终审", "导出"];
 
   return (
     <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
