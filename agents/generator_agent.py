@@ -131,6 +131,7 @@ class GeneratorAgent(BaseAgent):
                 "chapter_id": cid,
                 "no": ch_outline.get("no"),
                 "title": ch_outline.get("title", ""),
+                "volume": ch_outline.get("volume", "other"),
                 "category": ch_outline.get("category", ""),
                 "subsections": ch_outline.get("subsections", []) or [],
                 "content": content,

@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -99,6 +99,17 @@ class GenerateDraftRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     format: str  # "markdown" / "word" / "pdf"
+
+
+class ParsedDataPatchItem(BaseModel):
+    field_path: str
+    value: Any
+    note: Optional[str] = None
+    source: str = "user"
+
+
+class ParsedDataPatchRequest(BaseModel):
+    patches: list[ParsedDataPatchItem]
 
 
 class CreateMaterialRequest(BaseModel):
@@ -290,6 +301,95 @@ def _export_tender_file(tender: Tender, fmt: str) -> dict:
         "format": export_format,
         "export_path": str(export_path),
         "download_url": f"/api/downloads/{tender.id}/{download_format}",
+    }
+
+
+def _volume_label(volume: str) -> str:
+    return {
+        "commercial": "商务标",
+        "technical": "技术标",
+        "price": "报价标",
+        "other": "其他",
+    }.get(volume or "other", "其他")
+
+
+def _format_outline_refs(refs: list[dict[str, Any]] | None) -> str:
+    if not refs:
+        return "无"
+    parts = []
+    for ref in refs[:3]:
+        page = ref.get("page")
+        quote = (ref.get("quote") or "").strip()
+        field_path = ref.get("field_path") or ""
+        label = f"P.{page}" if page else field_path or "来源"
+        if quote:
+            label += f"：{quote[:80]}"
+        parts.append(label)
+    return "；".join(parts)
+
+
+def _build_outline_markdown(project: Project, outline: list[dict[str, Any]]) -> str:
+    lines = [
+        f"# {project.project_name or project.name} - 投标文件提纲",
+        "",
+        f"- **项目 ID**: {project.id}",
+    ]
+    if project.tender_no:
+        lines.append(f"- **招标编号**: {project.tender_no}")
+    lines.extend([
+        "",
+        "## 两级目录",
+        "",
+    ])
+
+    current_volume = None
+    for idx, ch in enumerate(outline, 1):
+        volume = ch.get("volume", "other")
+        if volume != current_volume:
+            current_volume = volume
+            lines.extend(["", f"### {_volume_label(volume)}", ""])
+        no = ch.get("no", idx)
+        title = ch.get("title") or f"第{no}章"
+        category = ch.get("category") or "未分类"
+        source = ch.get("source") or "unknown"
+        lines.append(f"{no}. **{title}**")
+        lines.append(f"   - 分类: `{category}`")
+        lines.append(f"   - 来源: `{source}`")
+        lines.append(
+            f"   - 投标要求位置: {_format_outline_refs(ch.get('requirement_refs'))}"
+        )
+        lines.append(
+            f"   - 评分位置: {_format_outline_refs(ch.get('scoring_refs'))}"
+        )
+        for sub in ch.get("subsections") or []:
+            sub_title = sub.get("title") if isinstance(sub, dict) else str(sub)
+            if sub_title:
+                lines.append(f"   - {sub_title}")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def _export_outline_file(project: Project, fmt: str = "markdown") -> dict:
+    export_format = _normalize_export_format(fmt)
+    if export_format != "markdown":
+        raise HTTPException(400, "提纲阶段暂只支持 Markdown 导出")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    outline = (
+        parsed.get("_confirmed_outline")
+        or parsed.get("_generated_outline")
+        or []
+    )
+    if not outline:
+        raise HTTPException(400, "尚未生成提纲，无法导出")
+    markdown = _build_outline_markdown(project, outline)
+    export_path = EXPORTS_DIR / f"outline_{project.id}.md"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path.write_text(markdown, encoding="utf-8")
+    return {
+        "format": "markdown",
+        "export_path": str(export_path),
+        "download_url": f"/api/downloads/outlines/{project.id}/markdown",
     }
 
 
@@ -1015,6 +1115,39 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             yield ev
         return
 
+    # ---- "导出提纲" → outline export ----
+    if ("导出" in msg or "下载" in msg) and re.search(r"提纲|大纲|目录", msg):
+        try:
+            export_result = _export_outline_file(project, "markdown")
+        except HTTPException as e:
+            for ev in _sse_tool_sync(
+                "exportTender",
+                {"projectId": project_id, "format": "markdown", "target": "outline"},
+                {
+                    "projectId": project_id,
+                    "format": "markdown",
+                    "error": e.detail,
+                    "message": f"提纲导出失败：{e.detail}",
+                },
+            ):
+                yield ev
+            for ev in _sse_finish_sync():
+                yield ev
+            return
+        for ev in _sse_tool_sync(
+            "exportTender",
+            {"projectId": project_id, "format": "markdown", "target": "outline"},
+            {
+                "projectId": project_id,
+                **export_result,
+                "message": "已导出提纲为 markdown",
+            },
+        ):
+            yield ev
+        for ev in _sse_finish_sync():
+            yield ev
+        return
+
     # ---- "导出" → export ----
     if "导出" in msg or "下载" in msg:
         tender = _active_main_tender(session, project_id)
@@ -1276,6 +1409,144 @@ def confirm_parse(project_id: int, req: TenderParseConfirmRequest):
     }
 
 
+def _parse_field_path(path: str) -> list[str | int]:
+    parts: list[str | int] = []
+    for seg in path.split("."):
+        if not seg:
+            raise ValueError("字段路径不能为空")
+        pos = 0
+        name = ""
+        while pos < len(seg):
+            ch = seg[pos]
+            if ch == "[":
+                if name:
+                    parts.append(name)
+                    name = ""
+                end = seg.find("]", pos)
+                if end < 0:
+                    raise ValueError(f"字段路径格式错误: {path}")
+                idx_text = seg[pos + 1:end]
+                if not idx_text.isdigit():
+                    raise ValueError(f"数组下标必须是数字: {path}")
+                parts.append(int(idx_text))
+                pos = end + 1
+            else:
+                name += ch
+                pos += 1
+        if name:
+            parts.append(name)
+    return parts
+
+
+def _get_path_value(data: Any, parts: list[str | int]) -> Any:
+    cur = data
+    for part in parts:
+        if isinstance(part, int):
+            if not isinstance(cur, list) or part >= len(cur):
+                return None
+            cur = cur[part]
+        else:
+            if not isinstance(cur, dict) or part not in cur:
+                return None
+            cur = cur[part]
+    return cur
+
+
+def _set_path_value(data: dict, field_path: str, value: Any) -> Any:
+    """Set a parsed_data path and return the old value."""
+    if not field_path or field_path.startswith("_"):
+        raise ValueError("不允许修改内部字段")
+
+    # K 字段顶层修改保留现有 source_page/source_pages。
+    if "." not in field_path and "[" not in field_path and re.match(r"^K\d{2}_", field_path):
+        old = data.get(field_path)
+        if isinstance(old, dict) and ("value" in old or "items" in old):
+            if isinstance(value, list):
+                pages = old.get("source_pages") if isinstance(old.get("source_pages"), list) else []
+                data[field_path] = {"items": value, "source_pages": pages}
+            else:
+                data[field_path] = {
+                    "value": value,
+                    "source_page": old.get("source_page"),
+                }
+        else:
+            data[field_path] = value
+        return old
+
+    parts = _parse_field_path(field_path)
+    old = _get_path_value(data, parts)
+    cur: Any = data
+    for i, part in enumerate(parts[:-1]):
+        nxt = parts[i + 1]
+        if isinstance(part, int):
+            if not isinstance(cur, list):
+                raise ValueError(f"路径不是数组: {field_path}")
+            while len(cur) <= part:
+                cur.append({} if isinstance(nxt, str) else [])
+            cur = cur[part]
+        else:
+            if not isinstance(cur, dict):
+                raise ValueError(f"路径不是对象: {field_path}")
+            if part not in cur or cur[part] is None:
+                cur[part] = [] if isinstance(nxt, int) else {}
+            cur = cur[part]
+
+    last = parts[-1]
+    if isinstance(last, int):
+        if not isinstance(cur, list):
+            raise ValueError(f"路径不是数组: {field_path}")
+        while len(cur) <= last:
+            cur.append(None)
+        cur[last] = value
+    else:
+        if not isinstance(cur, dict):
+            raise ValueError(f"路径不是对象: {field_path}")
+        cur[last] = value
+    return old
+
+
+@app.patch("/projects/{project_id}/parsed-data")
+def patch_parsed_data(project_id: int, req: ParsedDataPatchRequest):
+    """Apply explicit parsed_data patches and record correction audit entries."""
+    if not req.patches:
+        raise HTTPException(400, "patches 不能为空")
+
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    corrections = parsed.setdefault("_corrections", [])
+    applied = []
+
+    for patch in req.patches:
+        try:
+            old_value = _set_path_value(parsed, patch.field_path, patch.value)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        entry = {
+            "field_path": patch.field_path,
+            "old_value": old_value,
+            "new_value": patch.value,
+            "note": patch.note,
+            "source": patch.source or "user",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        corrections.append(entry)
+        applied.append(entry)
+
+    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
+    project.status = project.status or "parsed"
+    session.commit()
+
+    return {
+        "message": f"已应用 {len(applied)} 项解析修正",
+        "applied": applied,
+        "parsed_data": parsed,
+    }
+
+
 # ---- 材料库管理 ----
 
 @app.get("/materials")
@@ -1396,22 +1667,25 @@ def list_tender_files(project_id: int, tender_id: int):
                 "kind": "top",
             })
 
-    # 分类子目录（01_公司资质 / 02_业绩案例 / ...）
-    for entry in sorted(main_dir.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir():
-            continue
-        # 解析分类编号 + 名称: "01_公司资质" -> ("01", "公司资质")
+    def _folder_entry(folder: Path, prefix: str = "") -> dict:
+        rel = f"{prefix}/{folder.name}" if prefix else folder.name
         cat_no = ""
-        cat_name = entry.name
-        if "_" in entry.name:
-            prefix, _, rest = entry.name.partition("_")
-            if prefix.isdigit():
-                cat_no = prefix
+        cat_name = folder.name
+        if "_" in folder.name:
+            head, _, rest = folder.name.partition("_")
+            if head.isdigit():
+                cat_no = head
                 cat_name = rest
+        volume_label = {
+            "commercial": "商务标",
+            "technical": "技术标",
+            "price": "报价标",
+            "other": "其他",
+        }.get(prefix, prefix)
+        display_name = f"{volume_label} / {cat_name}" if prefix else cat_name
         files = []
-        for f in sorted(entry.iterdir(), key=lambda p: p.name):
+        for f in sorted(folder.iterdir(), key=lambda p: p.name):
             if f.is_file() and f.suffix == ".md":
-                # 文件名首段数字是 chapter no: "01_xxx.md" -> no=1
                 fname = f.name
                 chap_no = None
                 if "_" in fname:
@@ -1420,17 +1694,28 @@ def list_tender_files(project_id: int, tender_id: int):
                         chap_no = int(head)
                 files.append({
                     "name": fname,
-                    "path": f"{entry.name}/{fname}",
+                    "path": f"{rel}/{fname}",
                     "size": f.stat().st_size,
                     "chapter_no": chap_no,
                 })
-        folders.append({
-            "name": cat_name,
-            "category": entry.name,
+        return {
+            "name": display_name,
+            "category": rel,
             "category_no": cat_no,
-            "path": entry.name,
+            "path": rel,
             "files": files,
-        })
+        }
+
+    # 分类子目录：兼容旧结构 main/<category>/ 与新结构 main/<volume>/<category>/
+    for entry in sorted(main_dir.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        child_dirs = [p for p in entry.iterdir() if p.is_dir()]
+        if entry.name in {"commercial", "technical", "price", "other"} and child_dirs:
+            for cat_dir in sorted(child_dirs, key=lambda p: p.name):
+                folders.append(_folder_entry(cat_dir, prefix=entry.name))
+        else:
+            folders.append(_folder_entry(entry))
 
     return {
         "tender_id": tender_id,
@@ -1511,6 +1796,20 @@ def match_materials(project_id: int, tender_type: str = "main"):
     }
 
 
+@app.post("/projects/{project_id}/outline/export")
+def export_outline(project_id: int, req: ExportRequest):
+    """导出提纲为 Markdown（提纲阶段即可使用）。"""
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    result = _export_outline_file(project, req.format)
+    return {
+        "message": f"已导出提纲为 {result['format']}",
+        **result,
+    }
+
+
 @app.post("/tenders/{tender_id}/review")
 def review_tender(tender_id: int):
     """由 ReviewerAgent 执行 C01-C10 终审检查。"""
@@ -1567,6 +1866,21 @@ def export_tender(tender_id: int, req: ExportRequest):
         "message": f"已导出为 {result['format']}",
         **result,
     }
+
+
+@app.get("/downloads/outlines/{project_id}/{fmt}")
+def download_outline_export(project_id: int, fmt: str):
+    export_format = _normalize_export_format(fmt)
+    if export_format != "markdown":
+        raise HTTPException(400, "提纲导出暂只支持 Markdown")
+    path = EXPORTS_DIR / f"outline_{project_id}.md"
+    if not path.exists():
+        raise HTTPException(404, "提纲导出文件不存在，请先导出")
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=path.name,
+    )
 
 
 @app.get("/downloads/{tender_id}/{fmt}")

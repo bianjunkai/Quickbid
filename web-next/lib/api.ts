@@ -219,4 +219,18 @@ export const exportTender = (
     body: JSON.stringify({ format }),
   });
 
+export const exportOutline = (
+  projectId: number,
+  format: "markdown" | "md" = "markdown"
+) =>
+  request<{
+    message: string;
+    format: string;
+    export_path: string;
+    download_url: string;
+  }>(`/api/projects/${projectId}/outline/export`, {
+    method: "POST",
+    body: JSON.stringify({ format }),
+  });
+
 export { ApiError };

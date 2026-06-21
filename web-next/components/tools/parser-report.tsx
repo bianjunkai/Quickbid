@@ -12,9 +12,18 @@ const TABS = [
   { id: "schema", label: "数据", icon: FileCode2, num: "04" },
 ] as const;
 
+type EvidenceRef = {
+  page?: number | null;
+  quote?: string;
+  field_path?: string;
+  source_type?: string;
+  confidence?: string;
+};
+
 export function ParserReport({ data }: { data: any }) {
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("k");
   const [copied, setCopied] = useState(false);
+  const [evidence, setEvidence] = useState<EvidenceRef | null>(null);
 
   const handleCopy = () => {
     if (typeof window === "undefined") return;
@@ -74,16 +83,25 @@ export function ParserReport({ data }: { data: any }) {
 
       {/* Content */}
       <div className="px-6 pb-8">
-        {tab === "k" && <KFields data={data} />}
+        {evidence && (
+          <EvidencePanel evidence={evidence} onClose={() => setEvidence(null)} />
+        )}
+        {tab === "k" && <KFields data={data} onEvidence={setEvidence} />}
         {tab === "markers" && <Markers data={data} />}
-        {tab === "risks" && <Risks data={data} />}
+        {tab === "risks" && <Risks data={data} onEvidence={setEvidence} />}
         {tab === "schema" && <Schema data={data} />}
       </div>
     </div>
   );
 }
 
-function KFields({ data }: { data: any }) {
+function KFields({
+  data,
+  onEvidence,
+}: {
+  data: any;
+  onEvidence: (evidence: EvidenceRef) => void;
+}) {
   // K 字段可能两种 shape：
   //   旧：标量字符串 / 数组 string[]
   //   新：标量 {value, source_page} / 数组 {items, source_pages}
@@ -93,12 +111,13 @@ function KFields({ data }: { data: any }) {
       const items = Array.isArray(raw.items) ? raw.items : null;
       const pages = Array.isArray(raw.source_pages) ? raw.source_pages : [];
       if (items) {
-        return items
+        const mapped = items
           .map((it: any, i: number) => ({
             text: typeof it === "string" ? it : JSON.stringify(it),
             page: typeof pages[i] === "number" && pages[i] > 0 ? pages[i] : null,
           }))
           .filter((x: { text: string }) => x.text);
+        return { kind: "array" as const, items: mapped };
       }
       const value = raw.value;
       const page = typeof raw.source_page === "number" && raw.source_page > 0 ? raw.source_page : null;
@@ -151,7 +170,32 @@ function KFields({ data }: { data: any }) {
         const field = readKField(data[k]);
         const headerPage = field.kind === "scalar" ? field.page : null;
         return (
-          <div key={k} className="card-soft p-4 hover:shadow-md transition-shadow relative">
+          <button
+            key={k}
+            type="button"
+            onClick={() => {
+              const quote =
+                field.kind === "scalar"
+                  ? field.text
+                  : field.kind === "array"
+                    ? field.items.map((it: { text: string }) => it.text).join("；")
+                    : "";
+              const page =
+                field.kind === "scalar"
+                  ? field.page
+                  : field.kind === "array"
+                    ? field.items.find((it: { page: number | null }) => it.page)?.page ?? null
+                    : null;
+              onEvidence({
+                page,
+                quote,
+                field_path: k,
+                source_type: "tender",
+                confidence: page ? "high" : "medium",
+              });
+            }}
+            className="card-soft p-4 hover:shadow-md transition-shadow relative text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
+          >
             <div className="flex items-center gap-2 mb-1.5">
               <span className="text-[10px] font-mono text-[var(--color-primary)] font-semibold">
                 {k.split("_")[0]}
@@ -193,7 +237,7 @@ function KFields({ data }: { data: any }) {
                 )}
               </div>
             )}
-          </div>
+          </button>
         );
       })}
     </div>
@@ -275,7 +319,13 @@ function Markers({ data }: { data: any }) {
   );
 }
 
-function Risks({ data }: { data: any }) {
+function Risks({
+  data,
+  onEvidence,
+}: {
+  data: any;
+  onEvidence: (evidence: EvidenceRef) => void;
+}) {
   const groups = [
     { key: "fatal_items", label: "FATAL", state: "error" as const },
     { key: "critical_items", label: "CRITICAL", state: "error" as const },
@@ -309,7 +359,18 @@ function Risks({ data }: { data: any }) {
                 const riskText = readRiskText(it);
                 const meta = readRiskMeta(it);
                 return (
-                  <div key={i} className="px-4 py-3">
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => onEvidence({
+                      page: it.source_page ?? null,
+                      quote: riskText,
+                      field_path: `marker_extractions.${g.key}[${i}]`,
+                      source_type: "tender",
+                      confidence: it.source_page ? "high" : "medium",
+                    })}
+                    className="w-full px-4 py-3 text-left hover:bg-[var(--color-paper-warm)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
+                  >
                     <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-ink-mute)] font-mono flex-wrap">
                       {it.marker && (
                         <span className="text-[var(--color-primary)] font-semibold">{it.marker}</span>
@@ -344,13 +405,66 @@ function Risks({ data }: { data: any }) {
                     <pre className="text-[12px] text-[var(--color-ink)] font-mono whitespace-pre-wrap break-words leading-[1.7] bg-[var(--color-paper-warm)] p-3 rounded-lg overflow-x-auto">
                       {riskText || "未返回原文，可在“数据”页查看完整解析 JSON。"}
                     </pre>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           </details>
         );
       })}
+    </div>
+  );
+}
+
+function EvidencePanel({
+  evidence,
+  onClose,
+}: {
+  evidence: EvidenceRef;
+  onClose: () => void;
+}) {
+  return (
+    <div className="mb-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+      <div className="flex items-start gap-3">
+        <FileText className="w-4 h-4 text-[var(--color-primary)] mt-0.5 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[12px] font-semibold text-[var(--color-ink)]">
+              引用证据
+            </span>
+            {evidence.page ? (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-[var(--color-paper-warm)] text-[var(--color-ink-soft)]">
+                P.{evidence.page}
+              </span>
+            ) : (
+              <span className="text-[10px] text-[var(--color-ink-mute)]">
+                页码未返回
+              </span>
+            )}
+            {evidence.field_path && (
+              <span className="text-[10px] font-mono text-[var(--color-ink-mute)] truncate">
+                {evidence.field_path}
+              </span>
+            )}
+          </div>
+          {evidence.quote ? (
+            <div className="mt-2 text-[12.5px] text-[var(--color-ink-soft)] leading-[1.7] whitespace-pre-wrap break-words">
+              {evidence.quote}
+            </div>
+          ) : (
+            <div className="mt-2 text-[12px] text-[var(--color-ink-mute)]">
+              当前字段没有可展示的原文片段。
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-[11px] text-[var(--color-ink-mute)] hover:text-[var(--color-ink)]"
+        >
+          关闭
+        </button>
+      </div>
     </div>
   );
 }

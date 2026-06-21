@@ -21,14 +21,29 @@ const SOURCE_LABEL: Record<string, string> = {
   fallback: "骨架",
 };
 
+const VOLUME_LABEL: Record<string, string> = {
+  commercial: "商务标",
+  technical: "技术标",
+  price: "报价标",
+  other: "其他",
+};
+
 type Subsection = { id?: string; title?: string };
+type EvidenceRef = {
+  page?: number | null;
+  quote?: string;
+  field_path?: string;
+};
 type Chapter = {
   id?: string;
   no?: number;
   title?: string;
+  volume?: string;
   category?: string;
   subsections?: Subsection[];
   source?: string;
+  requirement_refs?: EvidenceRef[];
+  scoring_refs?: EvidenceRef[];
 };
 
 type ValidationResult = {
@@ -101,6 +116,7 @@ export function OutlineToolResult({
     const total = outline.length;
     const subsTotal = outline.reduce((s, c) => s + (c.subsections?.length ?? 0), 0);
     const validation = output.validation;
+    const groups = groupByVolume(outline);
 
     return (
       <div className="space-y-3">
@@ -145,11 +161,20 @@ export function OutlineToolResult({
 
           {expanded && (
             <>
-              <ol className="border-t border-[var(--color-border)] divide-y divide-[var(--color-border)]">
-                {outline.map((ch, i) => (
-                  <ChapterRow key={ch.id ?? i} chapter={ch} index={i} />
+              <div className="border-t border-[var(--color-border)]">
+                {groups.map((group) => (
+                  <div key={group.volume}>
+                    <div className="px-4 py-2 bg-[var(--color-paper-warm)] border-b border-[var(--color-border)] text-[11px] font-semibold text-[var(--color-ink-soft)]">
+                      {VOLUME_LABEL[group.volume] ?? group.volume} · {group.items.length} 章
+                    </div>
+                    <ol className="divide-y divide-[var(--color-border)]">
+                      {group.items.map(({ chapter, index }) => (
+                        <ChapterRow key={chapter.id ?? index} chapter={chapter} index={index} />
+                      ))}
+                    </ol>
+                  </div>
                 ))}
-              </ol>
+              </div>
               {output.action_hint && (
                 <div className="px-4 py-2.5 bg-[var(--color-primary-bg)] border-t border-[var(--color-primary-tint)] flex items-start gap-2">
                   <Pencil className="w-3 h-3 text-[var(--color-primary-deep)] mt-0.5 shrink-0" />
@@ -168,12 +193,31 @@ export function OutlineToolResult({
   return null;
 }
 
+function groupByVolume(outline: Chapter[]) {
+  const order = ["commercial", "technical", "price", "other"];
+  const map = new Map<string, Array<{ chapter: Chapter; index: number }>>();
+  outline.forEach((chapter, index) => {
+    const volume = chapter.volume || "other";
+    if (!map.has(volume)) map.set(volume, []);
+    map.get(volume)!.push({ chapter, index });
+  });
+  return Array.from(map.entries())
+    .sort((a, b) => {
+      const ai = order.indexOf(a[0]);
+      const bi = order.indexOf(b[0]);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    })
+    .map(([volume, items]) => ({ volume, items }));
+}
+
 function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
   const no = chapter.no ?? index + 1;
   const cat = chapter.category ?? "";
   const catLabel = CATEGORY_LABEL[cat] ?? cat;
   const subs = chapter.subsections ?? [];
   const sourceLabel = chapter.source ? SOURCE_LABEL[chapter.source] : null;
+  const requirementRef = firstRefLabel(chapter.requirement_refs);
+  const scoringRef = firstRefLabel(chapter.scoring_refs);
 
   return (
     <li className="px-4 py-3 hover:bg-[var(--color-paper-warm)] transition-colors">
@@ -197,6 +241,20 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
               </span>
             )}
           </div>
+          {(requirementRef || scoringRef) && (
+            <div className="mt-1 flex flex-wrap gap-1.5 text-[10.5px] text-[var(--color-ink-mute)]">
+              {requirementRef && (
+                <span className="rounded-md bg-[var(--color-primary-bg)] px-1.5 py-0.5 text-[var(--color-primary-deep)]">
+                  要求 {requirementRef}
+                </span>
+              )}
+              {scoringRef && (
+                <span className="rounded-md bg-[var(--color-warning-bg)] px-1.5 py-0.5 text-[var(--color-warning)]">
+                  评分 {scoringRef}
+                </span>
+              )}
+            </div>
+          )}
           {subs.length > 0 && (
             <ul className="mt-1.5 space-y-0.5 pl-3 border-l-2 border-[var(--color-border)]">
               {subs.map((s, j) => (
@@ -213,6 +271,14 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
       </div>
     </li>
   );
+}
+
+function firstRefLabel(refs?: EvidenceRef[]) {
+  const ref = refs?.find((r) => r.page || r.field_path || r.quote);
+  if (!ref) return "";
+  if (ref.page) return `P.${ref.page}`;
+  if (ref.field_path) return ref.field_path;
+  return ref.quote?.slice(0, 24) || "";
 }
 
 function ValidationCard({ validation }: { validation: ValidationResult }) {

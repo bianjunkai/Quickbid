@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.base import BaseAgent, AgentContext
+from agents.bid_parser.evidence import evidence_from_k_field, make_evidence_ref
 from agents.bid_parser.pipeline import BidLLMClient
 from agents.bid_parser.schema import k_field_value, k_field_items_with_pages
 
@@ -38,6 +39,8 @@ STANDARD_CATEGORIES = [
     "05_商务文件",
     "06_其他",
 ]
+
+STANDARD_VOLUMES = ["commercial", "technical", "price", "other"]
 
 OUTLINE_SYSTEM_PROMPT = """你是医院信息化投标文件的标书结构规划师。**每个项目的标书结构都不同**，
 由招标文件的实际要求决定，不是套用固定模板。
@@ -117,6 +120,7 @@ OUTLINE_SYSTEM_PROMPT = """你是医院信息化投标文件的标书结构规�
       "id": "ch1",
       "no": 1,
       "title": "公司资质",
+      "volume": "commercial",
       "category": "01_公司资质",
       "subsections": [
         {"id": "ch1.1", "title": "营业执照与法人证明"}
@@ -125,6 +129,12 @@ OUTLINE_SYSTEM_PROMPT = """你是医院信息化投标文件的标书结构规�
     }
   ]
 }
+
+`volume` 取值：
+- `commercial`：商务标/资格/业绩/商务文件
+- `technical`：技术标/技术方案/实施方案/售后运维
+- `price`：报价标/价格文件/开标一览表/分项报价
+- `other`：无法归类但仍需保留的内容
 
 `source` 取值：
 - `k12`：来自 K12 模板要求
@@ -246,6 +256,8 @@ class MatcherAgent(BaseAgent):
             outline_chapters = self._fallback_outline(bid_doc_structure)
             used_fallback = True
 
+        outline_chapters = self._attach_outline_refs(outline_chapters, parsed)
+
         # 写回 ctx
         ctx.outline = outline_chapters
         ctx.parsed_data["_generated_outline"] = outline_chapters
@@ -295,6 +307,7 @@ class MatcherAgent(BaseAgent):
             chapters.append({
                 "chapter": ch.get("title", ""),
                 "chapter_id": ch.get("id", ""),
+                "volume": ch.get("volume", "other"),
                 "category": ch.get("category", ""),
                 "file_path": primary["file_path"],
                 "material_title": primary["material_title"],
@@ -488,6 +501,12 @@ class MatcherAgent(BaseAgent):
             category = ch.get("category") or ""
             if category not in STANDARD_CATEGORIES:
                 category = "06_其他"
+            volume = ch.get("volume") or ""
+            if volume not in STANDARD_VOLUMES:
+                volume = MatcherAgent._infer_volume(
+                    title=title,
+                    category=category,
+                )
             subs_raw = ch.get("subsections") or []
             subs: list[dict[str, Any]] = []
             for j, s in enumerate(subs_raw, 1):
@@ -511,6 +530,7 @@ class MatcherAgent(BaseAgent):
                 "id": cid,
                 "no": i,
                 "title": title,
+                "volume": volume,
                 "category": category,
                 "subsections": subs,
                 "source": ch.get("source") or "llm_inferred",
@@ -564,6 +584,10 @@ class MatcherAgent(BaseAgent):
                     "id": cid,
                     "no": i,
                     "title": name,
+                    "volume": MatcherAgent._infer_volume(
+                        title=name,
+                        category=category,
+                    ),
                     "category": category,
                     "subsections": [],
                     "source": "fallback",
@@ -573,9 +597,82 @@ class MatcherAgent(BaseAgent):
         # 最后兜底：6 大分类骨架
         return [
             {"id": f"ch{i+1}", "no": i + 1, "title": cat.split("_", 1)[1],
+             "volume": MatcherAgent._infer_volume(title=cat, category=cat),
              "category": cat, "subsections": [], "source": "fallback"}
             for i, cat in enumerate(STANDARD_CATEGORIES)
         ]
+
+    @staticmethod
+    def _infer_volume(title: str, category: str) -> str:
+        """Infer bid volume from chapter title and material category."""
+        text = f"{title or ''} {category or ''}"
+        if any(kw in text for kw in ["报价", "价格", "开标一览", "分项报价", "投标报价"]):
+            return "price"
+        if category in ("03_技术方案", "04_实施方案"):
+            return "technical"
+        if category in ("01_公司资质", "02_业绩案例", "05_商务文件"):
+            return "commercial"
+        if any(kw in text for kw in ["技术", "实施", "运维", "售后", "培训", "演示"]):
+            return "technical"
+        if any(kw in text for kw in ["商务", "资质", "业绩", "投标函", "承诺", "合同"]):
+            return "commercial"
+        return "other"
+
+    @staticmethod
+    def _attach_outline_refs(
+        outline: list[dict[str, Any]],
+        parsed: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Attach best-effort requirement/scoring evidence refs to outline rows."""
+        k12_refs = evidence_from_k_field(
+            parsed.get("K12_章节模板要求"),
+            "K12_章节模板要求",
+        )
+        scoring_refs = evidence_from_k_field(
+            parsed.get("K07_评分标准"),
+            "K07_评分标准",
+        )
+        scoring = parsed.get("scoring") or {}
+        detailed_scoring_refs: list[dict[str, Any]] = []
+        for dim_i, dim in enumerate(scoring.get("dimensions") or []):
+            if not isinstance(dim, dict):
+                continue
+            dim_name = dim.get("name") or ""
+            for sub_i, sub in enumerate(dim.get("sub_items") or []):
+                if not isinstance(sub, dict):
+                    continue
+                quote = "；".join(
+                    str(v) for v in [
+                        dim_name,
+                        sub.get("name"),
+                        sub.get("score"),
+                        sub.get("criteria"),
+                    ] if v not in (None, "")
+                )
+                if quote:
+                    detailed_scoring_refs.append(
+                        make_evidence_ref(
+                            page=sub.get("source_page") or dim.get("source_page"),
+                            quote=quote,
+                            field_path=(
+                                f"scoring.dimensions[{dim_i}]"
+                                f".sub_items[{sub_i}]"
+                            ),
+                        )
+                    )
+
+        for ch in outline:
+            source = ch.get("source")
+            if source == "k12":
+                ch["requirement_refs"] = k12_refs[:1]
+                ch["scoring_refs"] = []
+            elif source == "scoring":
+                ch["requirement_refs"] = []
+                ch["scoring_refs"] = (detailed_scoring_refs or scoring_refs)[:3]
+            else:
+                ch["requirement_refs"] = k12_refs[:1] if k12_refs else []
+                ch["scoring_refs"] = []
+        return outline
 
     # ================================================================
     # 阶段 3：自然语言理解提纲修改指令

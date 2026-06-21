@@ -55,6 +55,7 @@ def test_write_main_tender_files_accepts_non_numeric_chapter_no():
         chapter_path = (
             project_dir
             / "main"
+            / "technical"
             / "03_技术方案"
             / "00_system integration report_v2.md"
         )

@@ -702,7 +702,7 @@ class Orchestrator:
             cover.md              封面+目录
             draft.md              完整拼装 Markdown
             deviation.md          偏离表占位
-            <category>/           随 outline 动态生成
+            <volume>/<category>/  随 outline 动态生成
               <no:02d>_<title>.md 单章内容
         """
         if not project or not project.tender_file_path:
@@ -740,7 +740,8 @@ class Orchestrator:
             for ch in chapters:
                 no = ch.get("no", "?")
                 title = ch.get("title", "")
-                cover_lines.append(f"- 第{no}章 {title}")
+                volume = self._volume_label(ch.get("volume", "other"))
+                cover_lines.append(f"- [{volume}] 第{no}章 {title}")
             cover_lines.append("")
             (main_dir / "cover.md").write_text(
                 "\n".join(cover_lines), encoding="utf-8"
@@ -755,7 +756,11 @@ class Orchestrator:
             # 3) 各分类子目录 + 单章文件
             for ch in chapters:
                 cat = ch.get("category", "06_其他") or "06_其他"
-                cat_dir = main_dir / cat
+                volume = (
+                    ch.get("volume")
+                    or self._infer_outline_volume(ch.get("title", ""), cat)
+                )
+                cat_dir = main_dir / volume / cat
                 cat_dir.mkdir(parents=True, exist_ok=True)
                 no = ch.get("no", 0)
                 title = ch.get("title", "未命名章节")
@@ -952,6 +957,15 @@ class Orchestrator:
             s = s[:max_len]
         return s
 
+    @staticmethod
+    def _volume_label(volume: str) -> str:
+        return {
+            "commercial": "商务标",
+            "technical": "技术标",
+            "price": "报价标",
+            "other": "其他",
+        }.get(volume or "other", "其他")
+
     # ================================================================
     # 辅助方法
     # ================================================================
@@ -1026,6 +1040,7 @@ class Orchestrator:
                 "id": f"ch{after + 1}",
                 "no": after + 1,
                 "title": title,
+                "volume": self._infer_outline_volume(title, cat),
                 "category": cat,
                 "subsections": [],
                 "source": "user_added",
@@ -1079,7 +1094,7 @@ class Orchestrator:
         project = session.get(Project, self.ctx.project_id)
         step_msgs = {
             WorkflowStep.AWAIT_TENDER_FILE:
-                f"等待上传招标文件：\n`{project.tender_file_path}`\n\n放好后说「放好了」",
+                f"等待上传招标文件：\n`{project.tender_file_path}`\n\n放好后说“开始解析招标文件”。",
             WorkflowStep.AWAIT_PARSE_CONFIRM:
                 "请确认之前的解析结果，或告诉我需要修正的地方",
             WorkflowStep.AWAIT_OUTLINE_CONFIRM:
@@ -1117,6 +1132,21 @@ class Orchestrator:
                 "• 「终审」- 执行终审检查\n"
                 "• 「导出Word」- 导出Word文件\n"
                 "• PDF 导出暂不支持")
+
+    @staticmethod
+    def _infer_outline_volume(title: str, category: str) -> str:
+        text = f"{title or ''} {category or ''}"
+        if any(kw in text for kw in ["报价", "价格", "开标一览", "分项报价", "投标报价"]):
+            return "price"
+        if category in ("03_技术方案", "04_实施方案"):
+            return "technical"
+        if category in ("01_公司资质", "02_业绩案例", "05_商务文件"):
+            return "commercial"
+        if any(kw in text for kw in ["技术", "实施", "运维", "售后", "培训", "演示"]):
+            return "technical"
+        if any(kw in text for kw in ["商务", "资质", "业绩", "投标函", "承诺", "合同"]):
+            return "commercial"
+        return "other"
 
     # ================================================================
     # 会话持久化
