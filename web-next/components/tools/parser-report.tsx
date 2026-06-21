@@ -83,6 +83,7 @@ export function ParserReport({ data }: { data: any }) {
 
       {/* Content */}
       <div className="px-6 pb-8">
+        <CorrectionBanner data={data} />
         {evidence && (
           <EvidencePanel evidence={evidence} onClose={() => setEvidence(null)} />
         )}
@@ -90,6 +91,43 @@ export function ParserReport({ data }: { data: any }) {
         {tab === "markers" && <Markers data={data} />}
         {tab === "risks" && <Risks data={data} onEvidence={setEvidence} />}
         {tab === "schema" && <Schema data={data} />}
+      </div>
+    </div>
+  );
+}
+
+function CorrectionBanner({ data }: { data: any }) {
+  const applied = Array.isArray(data?._correction_applied)
+    ? data._correction_applied
+    : [];
+  const audit = Array.isArray(data?._corrections) ? data._corrections : [];
+  const items = applied.length > 0 ? applied : audit.slice(-2);
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mb-4 rounded-xl border border-[var(--color-success)]/25 bg-[var(--color-success-bg)]/70 p-3">
+      <div className="flex items-start gap-2">
+        <Check className="w-4 h-4 text-[var(--color-success)] mt-0.5 shrink-0" />
+        <div className="min-w-0">
+          <div className="text-[12px] font-semibold text-[var(--color-ink)]">
+            已应用解析修正
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {items.map((it: any, i: number) => (
+              <span
+                key={`${it.field_path ?? "field"}-${i}`}
+                className="inline-flex max-w-full items-center gap-1 rounded-md bg-white/70 px-2 py-0.5 text-[11px] text-[var(--color-ink-soft)]"
+              >
+                <span className="font-mono text-[var(--color-ink-mute)]">
+                  {it.field_path}
+                </span>
+                <span className="truncate">
+                  → {formatCorrectionValue(it.new_value)}
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -506,6 +544,17 @@ function stringifyRiskValue(value: any): string {
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   try {
     return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatCorrectionValue(value: any): string {
+  if (value === undefined || value === null || value === "") return "空";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
   } catch {
     return String(value);
   }

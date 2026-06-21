@@ -323,13 +323,25 @@ class GeneratorAgent(BaseAgent):
 
         parts.append("## 目录")
         parts.append("")
+        current_volume = None
         for ch in chapters:
+            volume = ch.get("volume", "other")
+            if volume != current_volume:
+                current_volume = volume
+                parts.append(f"### {self._volume_label(volume)}")
+                parts.append("")
             no = ch.get("no", "?")
             title = ch.get("title", "")
             parts.append(f"- 第{no}章 {title}")
         parts.append("")
 
+        current_volume = None
         for ch in chapters:
+            volume = ch.get("volume", "other")
+            if volume != current_volume:
+                current_volume = volume
+                parts.append(f"## {self._volume_label(volume)}")
+                parts.append("")
             parts.append(ch.get("content", "").rstrip())
             parts.append("")
             parts.append("---")
@@ -343,6 +355,15 @@ class GeneratorAgent(BaseAgent):
         ])
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _volume_label(volume: str) -> str:
+        return {
+            "commercial": "商务标",
+            "technical": "技术标",
+            "price": "报价标",
+            "other": "其他",
+        }.get(volume or "other", "其他")
 
     # ================================================================
     # 辅助

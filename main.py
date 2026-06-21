@@ -112,6 +112,19 @@ class ParsedDataPatchRequest(BaseModel):
     patches: list[ParsedDataPatchItem]
 
 
+CORRECTION_FIELD_ALIASES = {
+    "项目名称": "K01_项目名称",
+    "项目名": "K01_项目名称",
+    "招标编号": "K02_招标编号",
+    "项目编号": "K02_招标编号",
+    "采购编号": "K02_招标编号",
+    "预算": "K04_预算金额",
+    "预算金额": "K04_预算金额",
+    "控制价": "K04_预算金额",
+    "最高限价": "K04_预算金额",
+}
+
+
 class CreateMaterialRequest(BaseModel):
     title: str
     category: str
@@ -1066,6 +1079,36 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             yield ev
         return
 
+    # ---- parsed-data natural-language corrections ----
+    correction_patches = (
+        _extract_parsed_data_patch_proposals(msg)
+        if project.parsed_data else []
+    )
+    if correction_patches:
+        try:
+            correction_result = _apply_parsed_data_patches(project, correction_patches)
+        except ValueError as e:
+            for ev in _sse_error_sync(f"解析修正失败：{e}"):
+                yield ev
+            return
+        session.commit()
+        for ev in _sse_text_sync(correction_result["message"]):
+            yield ev
+        for ev in _sse_tool_sync(
+            "parseTender",
+            {"projectId": project_id, "source": "chat_nl_correction"},
+            {
+                **correction_result["parsed_data"],
+                "_correction_applied": correction_result["applied"],
+                "message": correction_result["message"],
+                "correction_hint": "修正已写入解析数据；确认无误后说「继续」生成提纲。",
+            },
+        ):
+            yield ev
+        for ev in _sse_finish_sync():
+            yield ev
+        return
+
     # ---- "继续" / 其他 → 走 Orchestrator 状态机（关键路径）----
     # 状态机驱动：AWAIT_PARSE_CONFIRM → generate_outline → AWAIT_OUTLINE_CONFIRM
     #              AWAIT_OUTLINE_CONFIRM → match_materials → AWAIT_CHAPTER_CONFIRM
@@ -1505,6 +1548,101 @@ def _set_path_value(data: dict, field_path: str, value: Any) -> Any:
     return old
 
 
+def _extract_parsed_data_patch_proposals(msg: str) -> list[ParsedDataPatchItem]:
+    """
+    Convert common natural-language parsed-data corrections into explicit patches.
+
+    This is deliberately deterministic: it handles the high-frequency K-field
+    corrections users make after parsing, while the explicit PATCH endpoint
+    remains available for arbitrary nested paths.
+    """
+    text = (msg or "").strip()
+    if not text:
+        return []
+
+    verb = r"(?:应为|应该是|应改为|改为|修改为|更正为|设置为|设为|是|为|=|：|:)"
+    value = r"\s*([^，。,；;\n]+)"
+    patches: list[ParsedDataPatchItem] = []
+    seen: set[str] = set()
+
+    # Explicit K-field path: "K04_预算金额 改为 900万"
+    for m in re.finditer(rf"\b(K\d{{2}}_[\w\u4e00-\u9fff]+)\b\s*{verb}{value}", text):
+        field_path = m.group(1)
+        new_value = m.group(2).strip()
+        if field_path not in seen and new_value:
+            seen.add(field_path)
+            patches.append(ParsedDataPatchItem(
+                field_path=field_path,
+                value=new_value,
+                note=f"自然语言修正：{text}",
+                source="chat_nl",
+            ))
+
+    for alias, field_path in CORRECTION_FIELD_ALIASES.items():
+        if field_path in seen:
+            continue
+        m = re.search(rf"{re.escape(alias)}\s*{verb}{value}", text)
+        if not m:
+            continue
+        new_value = m.group(1).strip()
+        if not new_value:
+            continue
+        seen.add(field_path)
+        patches.append(ParsedDataPatchItem(
+            field_path=field_path,
+            value=new_value,
+            note=f"自然语言修正：{text}",
+            source="chat_nl",
+        ))
+
+    return patches
+
+
+def _sync_project_fields_from_patch(project: Project, patch: ParsedDataPatchItem):
+    value = str(patch.value).strip() if patch.value is not None else ""
+    if patch.field_path == "K01_项目名称":
+        project.project_name = value or None
+    elif patch.field_path == "K02_招标编号":
+        project.tender_no = value or None
+    elif patch.field_path == "K04_预算金额":
+        amount = re.sub(r"[^\d.]", "", value)
+        project.budget = float(amount) if amount else None
+
+
+def _apply_parsed_data_patches(
+    project: Project,
+    patches: list[ParsedDataPatchItem],
+) -> dict[str, Any]:
+    if not patches:
+        raise ValueError("patches 不能为空")
+
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    corrections = parsed.setdefault("_corrections", [])
+    applied = []
+
+    for patch in patches:
+        old_value = _set_path_value(parsed, patch.field_path, patch.value)
+        entry = {
+            "field_path": patch.field_path,
+            "old_value": old_value,
+            "new_value": patch.value,
+            "note": patch.note,
+            "source": patch.source or "user",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        corrections.append(entry)
+        applied.append(entry)
+        _sync_project_fields_from_patch(project, patch)
+
+    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
+    project.status = project.status or "parsed"
+    return {
+        "message": f"已应用 {len(applied)} 项解析修正",
+        "applied": applied,
+        "parsed_data": parsed,
+    }
+
+
 @app.patch("/projects/{project_id}/parsed-data")
 def patch_parsed_data(project_id: int, req: ParsedDataPatchRequest):
     """Apply explicit parsed_data patches and record correction audit entries."""
@@ -1516,35 +1654,13 @@ def patch_parsed_data(project_id: int, req: ParsedDataPatchRequest):
     if not project:
         raise HTTPException(404, "项目不存在")
 
-    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
-    corrections = parsed.setdefault("_corrections", [])
-    applied = []
-
-    for patch in req.patches:
-        try:
-            old_value = _set_path_value(parsed, patch.field_path, patch.value)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        entry = {
-            "field_path": patch.field_path,
-            "old_value": old_value,
-            "new_value": patch.value,
-            "note": patch.note,
-            "source": patch.source or "user",
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-        corrections.append(entry)
-        applied.append(entry)
-
-    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
-    project.status = project.status or "parsed"
+    try:
+        result = _apply_parsed_data_patches(project, req.patches)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     session.commit()
 
-    return {
-        "message": f"已应用 {len(applied)} 项解析修正",
-        "applied": applied,
-        "parsed_data": parsed,
-    }
+    return result
 
 
 # ---- 材料库管理 ----
