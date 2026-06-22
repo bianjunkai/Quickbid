@@ -182,6 +182,7 @@ class GeneratorAgent(BaseAgent):
         chapter_no = chapter.get("no", "?")
         chapter_title = chapter.get("title", "")
         category = chapter.get("category", "")
+        requirement_block = self._format_matched_requirements(match)
 
         user_prompt = f"""# 标书项目
 {project_name}
@@ -195,6 +196,9 @@ class GeneratorAgent(BaseAgent):
 
 # 关联材料
 {material_block}
+
+# 招标要求/模板/评分依据
+{requirement_block}
 
 # 招标技术要求摘要
 {k08 or "（无）"}
@@ -258,6 +262,29 @@ class GeneratorAgent(BaseAgent):
         if body_block:
             parts.append(body_block)
         return "\n\n".join(parts)
+
+    def _format_matched_requirements(self, match: dict[str, Any]) -> str:
+        sources = [
+            s for s in (match.get("matched_sources") or [])
+            if s.get("source_type") != "material_library"
+        ]
+        if not sources:
+            return "（无额外匹配要求）"
+
+        lines: list[str] = []
+        for source in sources[:8]:
+            title = source.get("title") or "未命名要求"
+            source_type = source.get("source_type") or "tender_requirement"
+            lines.append(f"- [{source_type}] {title}")
+            for ref in (source.get("evidence") or [])[:2]:
+                page = f"P.{ref.get('page')} " if ref.get("page") else ""
+                quote = (ref.get("quote") or "").strip()
+                field_path = ref.get("field_path") or ""
+                if quote:
+                    lines.append(f"  - {page}{quote[:240]}")
+                elif field_path:
+                    lines.append(f"  - {field_path}")
+        return "\n".join(lines)
 
     # ================================================================
     # 失败占位章节

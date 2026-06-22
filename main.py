@@ -208,6 +208,102 @@ def _active_main_tender(session, project_id: int) -> Tender | None:
     return next((t for t in tenders if t.draft_path), tenders[0])
 
 
+TOOL_READINESS = {
+    "parseTender": {
+        "requires": ["tender_file"],
+        "recoverable_action": "请先上传招标文件",
+    },
+    "outlineDesign": {
+        "requires": ["parsed_data"],
+        "recoverable_action": "请先解析招标文件",
+    },
+    "matchMaterials": {
+        "requires": ["parsed_data", "outline"],
+        "recoverable_action": "请先生成并确认提纲",
+    },
+    "generateTender": {
+        "requires": ["outline", "matched_chapters"],
+        "recoverable_action": "请先完成提纲设计和材料匹配",
+    },
+    "reviewTender": {
+        "requires": ["draft"],
+        "recoverable_action": "请先生成主标书",
+    },
+    "exportOutline": {
+        "requires": ["outline"],
+        "recoverable_action": "请先生成提纲",
+    },
+    "exportTender": {
+        "requires": ["draft"],
+        "recoverable_action": "请先生成主标书",
+    },
+}
+
+
+def _project_parsed_data(project: Project) -> dict[str, Any]:
+    if not project.parsed_data:
+        return {}
+    try:
+        return json.loads(project.parsed_data)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _project_outline(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    return (
+        parsed.get("_confirmed_outline")
+        or parsed.get("_generated_outline")
+        or []
+    )
+
+
+def _check_tool_readiness(
+    project: Project,
+    tool_name: str,
+    session=None,
+) -> dict[str, Any]:
+    spec = TOOL_READINESS.get(tool_name)
+    if not spec:
+        return {"ok": True, "tool": tool_name, "missing": []}
+
+    parsed = _project_parsed_data(project)
+    outline = _project_outline(parsed)
+    missing: list[str] = []
+
+    for requirement in spec["requires"]:
+        if requirement == "tender_file":
+            tender_path = Path(project.tender_file_path) if project.tender_file_path else None
+            if not tender_path or not tender_path.exists():
+                missing.append("tender_file")
+        elif requirement == "parsed_data":
+            if not parsed:
+                missing.append("parsed_data")
+        elif requirement == "outline":
+            if not outline:
+                missing.append("outline")
+        elif requirement == "matched_chapters":
+            if not parsed.get("chapters"):
+                missing.append("matched_chapters")
+        elif requirement == "draft":
+            lookup_session = session or get_session()
+            tender = _active_main_tender(lookup_session, project.id)
+            draft_path = Path(tender.draft_path) if tender and tender.draft_path else None
+            if not draft_path or not draft_path.exists():
+                missing.append("draft")
+
+    return {
+        "ok": not missing,
+        "tool": tool_name,
+        "missing": missing,
+        "requires": spec["requires"],
+        "recoverable_action": spec["recoverable_action"],
+        "message": (
+            "当前项目数据不足，无法执行该工具。"
+            if missing else "工具前置数据已满足。"
+        ),
+    }
+
+
 def _normalize_export_format(fmt: str) -> str:
     value = (fmt or "word").lower().strip()
     aliases = {
@@ -1031,6 +1127,26 @@ def _sse_error_sync(error_message):
     yield {"data": json.dumps({"type": "error", "errorText": error_message}, ensure_ascii=False)}
 
 
+def _sse_readiness_failure_sync(tool_name: str, readiness: dict[str, Any], tool_input: dict[str, Any]):
+    message = (
+        f"{readiness.get('message')} 缺少："
+        f"{'、'.join(readiness.get('missing') or [])}。"
+        f"{readiness.get('recoverable_action')}"
+    )
+    yield from _sse_tool_sync(
+        tool_name,
+        tool_input,
+        {
+            "error": "readiness_failed",
+            "message": message,
+            "missing": readiness.get("missing", []),
+            "requires": readiness.get("requires", []),
+            "recoverable_action": readiness.get("recoverable_action"),
+        },
+    )
+    yield from _sse_finish_sync()
+
+
 @app.get("/projects/{project_id}/parse/stream")
 async def parse_stream(project_id: int, mode: Optional[str] = None):
     """
@@ -1073,6 +1189,15 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
 
     # ---- "放好了" → parse ----
     if _should_start_parse_from_message(msg, project.status):
+        readiness = _check_tool_readiness(project, "parseTender", session)
+        if not readiness["ok"]:
+            for ev in _sse_readiness_failure_sync(
+                "parseTender",
+                readiness,
+                {"projectId": project_id, "mode": "full"},
+            ):
+                yield ev
+            return
         for ev in _sse_text_sync("🔍 收到，开始解析..."):
             yield ev
         async for ev in _run_parse_sse(project_id, "full"):
@@ -1117,6 +1242,15 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
     # 上面分支已 return（parse / generate / review / export 走一次性路径），下面就是状态机入口
     # ---- "终审" → review ----
     if "终审" in msg:
+        readiness = _check_tool_readiness(project, "reviewTender", session)
+        if not readiness["ok"]:
+            for ev in _sse_readiness_failure_sync(
+                "reviewTender",
+                readiness,
+                {"projectId": project_id, "tenderType": "main"},
+            ):
+                yield ev
+            return
         tender = _active_main_tender(session, project_id)
         if not tender:
             for ev in _sse_error_sync("未找到主标书，无法终审"):
@@ -1139,7 +1273,9 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             {
                 "tenderId": tender.id,
                 "checks": review_result.get("checks", []),
+                "issues": review_result.get("issues", []),
                 "summary": review_result.get("summary", {}),
+                "deterministic_count": review_result.get("deterministic_count", 0),
                 "error": review_result.get("error"),
                 "message": (
                     f"终审失败：{review_result.get('error')}"
@@ -1160,6 +1296,15 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
 
     # ---- "导出提纲" → outline export ----
     if ("导出" in msg or "下载" in msg) and re.search(r"提纲|大纲|目录", msg):
+        readiness = _check_tool_readiness(project, "exportOutline", session)
+        if not readiness["ok"]:
+            for ev in _sse_readiness_failure_sync(
+                "exportTender",
+                readiness,
+                {"projectId": project_id, "format": "markdown", "target": "outline"},
+            ):
+                yield ev
+            return
         try:
             export_result = _export_outline_file(project, "markdown")
         except HTTPException as e:
@@ -1193,6 +1338,15 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
 
     # ---- "导出" → export ----
     if "导出" in msg or "下载" in msg:
+        readiness = _check_tool_readiness(project, "exportTender", session)
+        if not readiness["ok"]:
+            for ev in _sse_readiness_failure_sync(
+                "exportTender",
+                readiness,
+                {"projectId": project_id, "format": _export_format_from_message(msg)},
+            ):
+                yield ev
+            return
         tender = _active_main_tender(session, project_id)
         if not tender:
             for ev in _sse_error_sync("未找到主标书，无法导出"):
@@ -1256,6 +1410,26 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
         orch.ctx.chapters = orch.ctx.parsed_data["chapters"]
     # 强制设置 step 为当前 project 状态
     orch.step = status_to_step.get(project.status, WorkflowStep.IDLE)
+
+    state_tool = None
+    if "继续" in msg:
+        state_tool = {
+            "parsed": "outlineDesign",
+            "outline_generating": "matchMaterials",
+            "materials_preparing": "generateTender",
+        }.get(project.status)
+    elif re.search(r"生成|开始生成", msg):
+        state_tool = "generateTender"
+    if state_tool:
+        readiness = _check_tool_readiness(project, state_tool, session)
+        if not readiness["ok"]:
+            for ev in _sse_readiness_failure_sync(
+                state_tool,
+                readiness,
+                {"projectId": project_id, "tenderType": "main"},
+            ):
+                yield ev
+            return
 
     # "继续" 状态机的"进入动画"文案
     if "继续" in msg or "生成" in msg:
@@ -1345,7 +1519,9 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
                 "tenderId": result.get("tender_id"),
                 "tenderType": "sub",
                 "checks": sub_review.get("checks", []),
+                "issues": sub_review.get("issues", []),
                 "summary": sub_review.get("summary", {}),
+                "deterministic_count": sub_review.get("deterministic_count", 0),
                 "error": sub_review.get("error"),
                 "retries": result.get("retries", 0),
                 "message": "陪标终审完成",
@@ -1953,7 +2129,9 @@ def review_tender(tender_id: int):
     return {
         "tender_id": tender_id,
         "checks": checks,
+        "issues": review_result.get("issues", []),
         "summary": summary,
+        "deterministic_count": review_result.get("deterministic_count", 0),
         "error": review_error,
         "message": (
             f"终审失败：{review_error}"

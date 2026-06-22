@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Any
 
 from agents.base import BaseAgent, AgentContext
-from agents.bid_parser.evidence import evidence_from_k_field, make_evidence_ref
+from agents.bid_parser.evidence import (
+    evidence_from_k_field,
+    evidence_from_marker_item,
+    make_evidence_ref,
+)
 from agents.bid_parser.pipeline import BidLLMClient
 from agents.bid_parser.schema import k_field_value, k_field_items_with_pages
 
@@ -294,10 +298,15 @@ class MatcherAgent(BaseAgent):
 
         # 从文件系统加载材料库（不走数据库）
         material_dicts = self._load_materials_from_disk()
+        tender_sources = self._build_tender_sources(ctx.parsed_data or {})
 
         chapters: list[dict[str, Any]] = []
         for ch in outline:
             matches = self._match_chapter_to_materials(ch, material_dicts)
+            matched_sources = (
+                self._material_matches_to_sources(matches)
+                + self._match_chapter_to_tender_sources(ch, tender_sources)
+            )
             primary = matches[0] if matches else {
                 "file_path": None,
                 "material_title": "无匹配材料",
@@ -314,6 +323,7 @@ class MatcherAgent(BaseAgent):
                 "match_score": primary["match_score"],
                 "reason": primary["reason"],
                 "alternatives": matches[1:] if len(matches) > 1 else [],
+                "matched_sources": matched_sources,
             })
 
         ctx.chapters = chapters
@@ -443,6 +453,263 @@ class MatcherAgent(BaseAgent):
             "match_score": "低",
             "reason": "需新建",
         }]
+
+    @staticmethod
+    def _material_matches_to_sources(
+        matches: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        for match in matches:
+            if not match.get("file_path"):
+                continue
+            sources.append({
+                "source_type": "material_library",
+                "title": match.get("material_title") or "未命名材料",
+                "file_path": match.get("file_path"),
+                "match_score": match.get("match_score", ""),
+                "reason": match.get("reason", ""),
+                "evidence": [],
+            })
+        return sources
+
+    @staticmethod
+    def _build_tender_sources(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+        """Build tender-provided template/requirement/scoring sources."""
+        sources: list[dict[str, Any]] = []
+
+        def add_source(
+            source_type: str,
+            title: str,
+            quote: str,
+            field_path: str,
+            page: Any = None,
+            category_hint: str = "",
+            volume_hint: str = "",
+        ):
+            quote = str(quote or "").strip()
+            title = str(title or "").strip()
+            if not quote and not title:
+                return
+            sources.append({
+                "source_type": source_type,
+                "title": title or quote[:40],
+                "category_hint": category_hint,
+                "volume_hint": volume_hint,
+                "evidence": [
+                    make_evidence_ref(
+                        page=page,
+                        quote=quote or title,
+                        field_path=field_path,
+                    )
+                ],
+            })
+
+        # Tender templates: K12 plus structured bid_doc_structure.
+        for ref in evidence_from_k_field(
+            parsed.get("K12_章节模板要求"),
+            "K12_章节模板要求",
+        ):
+            sources.append({
+                "source_type": "tender_template",
+                "title": "投标文件章节模板要求",
+                "category_hint": "05_商务文件",
+                "volume_hint": "commercial",
+                "evidence": [ref],
+            })
+        for i, item in enumerate(
+            ((parsed.get("templates") or {}).get("bid_doc_structure") or [])
+        ):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("section_no") or ""
+            detail = "；".join(
+                str(v) for v in [
+                    item.get("section_no"),
+                    name,
+                    item.get("description"),
+                ] if v not in (None, "")
+            )
+            add_source(
+                "tender_template",
+                name or f"模板章节 {i + 1}",
+                detail,
+                f"templates.bid_doc_structure[{i}]",
+                item.get("source_page"),
+                category_hint=MatcherAgent._infer_category(name),
+                volume_hint=MatcherAgent._infer_volume(
+                    title=name,
+                    category=MatcherAgent._infer_category(name),
+                ),
+            )
+
+        # K-field requirement sources.
+        k_requirement_sources = [
+            ("K08_技术要求", "tender_requirement", "03_技术方案", "technical"),
+            ("K09_商务资质要求", "tender_requirement", "01_公司资质", "commercial"),
+            ("K13_偏离表格式要求", "tender_requirement", "05_商务文件", "commercial"),
+            ("K14_演示要求", "tender_requirement", "03_技术方案", "technical"),
+        ]
+        for field_path, source_type, category_hint, volume_hint in k_requirement_sources:
+            value = k_field_value(parsed.get(field_path))
+            for ref in evidence_from_k_field(parsed.get(field_path), field_path):
+                sources.append({
+                    "source_type": source_type,
+                    "title": field_path.split("_", 1)[1],
+                    "category_hint": category_hint,
+                    "volume_hint": volume_hint,
+                    "evidence": [ref],
+                })
+            if value and not any(s.get("title") == field_path.split("_", 1)[1] for s in sources):
+                add_source(
+                    source_type,
+                    field_path.split("_", 1)[1],
+                    value,
+                    field_path,
+                    category_hint=category_hint,
+                    volume_hint=volume_hint,
+                )
+
+        for field_path, key in [
+            ("K10_星标项", "tender_requirement"),
+            ("K11_废标条款", "tender_requirement"),
+        ]:
+            for i, (item, page) in enumerate(k_field_items_with_pages(parsed.get(field_path))):
+                add_source(
+                    key,
+                    field_path.split("_", 1)[1],
+                    item,
+                    f"{field_path}.items[{i}]",
+                    page,
+                    category_hint="05_商务文件",
+                    volume_hint="commercial",
+                )
+        marker_extractions = parsed.get("marker_extractions") or {}
+        for group_key in ("fatal_items", "critical_items", "high_items"):
+            for i, item in enumerate(marker_extractions.get(group_key) or []):
+                if not isinstance(item, dict):
+                    continue
+                refs = evidence_from_marker_item(
+                    item,
+                    f"marker_extractions.{group_key}[{i}]",
+                )
+                if refs:
+                    sources.append({
+                        "source_type": "tender_requirement",
+                        "title": item.get("semantic_label") or item.get("marker") or group_key,
+                        "category_hint": "",
+                        "volume_hint": "",
+                        "evidence": refs,
+                    })
+
+        scoring = parsed.get("scoring") or {}
+        for dim_i, dim in enumerate(scoring.get("dimensions") or []):
+            if not isinstance(dim, dict):
+                continue
+            dim_name = dim.get("name") or f"评分维度 {dim_i + 1}"
+            category_hint = MatcherAgent._infer_category(dim_name)
+            if not category_hint:
+                category_hint = "03_技术方案"
+            add_source(
+                "scoring_requirement",
+                dim_name,
+                "；".join(str(v) for v in [
+                    dim_name,
+                    dim.get("max_score"),
+                    dim.get("criteria"),
+                ] if v not in (None, "")),
+                f"scoring.dimensions[{dim_i}]",
+                dim.get("source_page"),
+                category_hint=category_hint,
+                volume_hint=MatcherAgent._infer_volume(dim_name, category_hint),
+            )
+            for sub_i, sub in enumerate(dim.get("sub_items") or []):
+                if not isinstance(sub, dict):
+                    continue
+                title = sub.get("name") or f"{dim_name}子项{sub_i + 1}"
+                category_hint = MatcherAgent._infer_category(title) or MatcherAgent._infer_category(dim_name)
+                if not category_hint:
+                    category_hint = "03_技术方案"
+                add_source(
+                    "scoring_requirement",
+                    title,
+                    "；".join(str(v) for v in [
+                        dim_name,
+                        title,
+                        sub.get("score"),
+                        sub.get("criteria"),
+                    ] if v not in (None, "")),
+                    f"scoring.dimensions[{dim_i}].sub_items[{sub_i}]",
+                    sub.get("source_page") or dim.get("source_page"),
+                    category_hint=category_hint,
+                    volume_hint=MatcherAgent._infer_volume(title, category_hint),
+                )
+
+        return sources
+
+    @staticmethod
+    def _match_chapter_to_tender_sources(
+        chapter: dict[str, Any],
+        sources: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for source in sources:
+            score = MatcherAgent._score_tender_source(chapter, source)
+            if score > 0:
+                matched = dict(source)
+                matched["match_score"] = "高" if score >= 80 else "中" if score >= 40 else "低"
+                matched["reason"] = "招标文件要求/评分项匹配"
+                scored.append((score, matched))
+
+        scored.sort(
+            key=lambda item: (
+                item[0],
+                1 if item[1].get("source_type") == "scoring_requirement" else 0,
+            ),
+            reverse=True,
+        )
+        return [source for _score, source in scored[:6]]
+
+    @staticmethod
+    def _score_tender_source(chapter: dict[str, Any], source: dict[str, Any]) -> int:
+        title = chapter.get("title") or ""
+        category = chapter.get("category") or ""
+        volume = chapter.get("volume") or ""
+        source_title = source.get("title") or ""
+        quote = " ".join(
+            ref.get("quote", "")
+            for ref in (source.get("evidence") or [])
+            if isinstance(ref, dict)
+        )
+        text = f"{source_title} {quote}"
+        score = 0
+        if source.get("category_hint") and source.get("category_hint") == category:
+            score += 35
+        if source.get("volume_hint") and source.get("volume_hint") == volume:
+            score += 20
+        for kw in MatcherAgent._extract_chapter_keywords(title)[:8]:
+            if len(kw) >= 2 and kw in text:
+                score += 35 if kw == title else 15
+                break
+        if source.get("source_type") == "tender_template" and chapter.get("source") == "k12":
+            score += 30
+        if source.get("source_type") == "scoring_requirement" and chapter.get("source") == "scoring":
+            score += 30
+        return min(score, 100)
+
+    @staticmethod
+    def _infer_category(text: str) -> str:
+        text = text or ""
+        if any(kw in text for kw in ["资质", "资格", "证书", "营业执照", "法人"]):
+            return "01_公司资质"
+        if any(kw in text for kw in ["业绩", "案例", "合同案例", "类似项目"]):
+            return "02_业绩案例"
+        if any(kw in text for kw in ["实施", "部署", "培训", "运维", "进度", "交付"]):
+            return "04_实施方案"
+        if any(kw in text for kw in ["技术", "功能", "架构", "接口", "安全", "系统", "方案"]):
+            return "03_技术方案"
+        if any(kw in text for kw in ["商务", "报价", "投标函", "偏离表", "承诺", "合同"]):
+            return "05_商务文件"
+        return ""
 
     @staticmethod
     def _extract_chapter_keywords(title: str) -> list[str]:

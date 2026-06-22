@@ -6,8 +6,22 @@ type CheckItem = {
   check_id?: string;
   check_name?: string;
   status?: "pass" | "warning" | "fail" | string;
+  severity?: string;
   issue?: string;
+  problem?: string;
+  expected?: string;
+  actual?: string;
   suggestion?: string;
+  requirement_ref?: {
+    page?: number | null;
+    quote?: string;
+    field_path?: string;
+  } | null;
+  draft_ref?: {
+    path?: string;
+    heading?: string;
+  } | null;
+  blocking?: boolean;
 };
 
 type Props = {
@@ -19,11 +33,13 @@ type Props = {
       medium?: number;
       low?: number;
     };
+    issues?: CheckItem[];
     error?: string;
     message?: string;
     tenderType?: string;
     tender_type?: string;
     retries?: number;
+    deterministic_count?: number;
   };
   errorText?: string;
 };
@@ -36,6 +52,7 @@ export function ReviewToolResult({ state, output, errorText }: Props) {
   const warnings = summary.medium ?? checks.filter((c) => c.status === "warning").length;
   const passed = summary.low ?? checks.filter((c) => c.status === "pass").length;
   const tenderType = output?.tenderType || output?.tender_type || "main";
+  const deterministicCount = output?.deterministic_count ?? 0;
 
   return (
     <div className="card-soft overflow-hidden">
@@ -48,6 +65,7 @@ export function ReviewToolResult({ state, output, errorText }: Props) {
           <div className="text-[10px] text-[var(--color-ink-mute)] font-mono">
             {state}
             {typeof output?.retries === "number" && output.retries > 0 ? ` · retry ${output.retries}` : ""}
+            {deterministicCount > 0 ? ` · deterministic ${deterministicCount}` : ""}
           </div>
         </div>
       </div>
@@ -135,10 +153,36 @@ function ReviewCheckRow({ check }: { check: CheckItem }) {
             <span className={`text-[10px] font-mono uppercase ${color}`}>
               {status}
             </span>
+            {check.blocking ? (
+              <span className="text-[10px] font-mono text-[var(--color-danger)]">
+                BLOCKING
+              </span>
+            ) : null}
           </div>
-          {check.issue ? (
+          {(check.draft_ref || check.requirement_ref) ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10.5px]">
+              {check.draft_ref ? (
+                <span className="rounded-md bg-[var(--color-paper-warm)] px-1.5 py-0.5 text-[var(--color-ink-soft)]">
+                  标书 {check.draft_ref.path || "draft.md"}
+                  {check.draft_ref.heading ? ` · ${check.draft_ref.heading}` : ""}
+                </span>
+              ) : null}
+              {check.requirement_ref ? (
+                <span className="rounded-md bg-[var(--color-primary-bg)] px-1.5 py-0.5 text-[var(--color-primary-deep)]">
+                  招标 {formatRequirementRef(check.requirement_ref)}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          {(check.problem || check.issue) ? (
             <div className="mt-1 text-[12px] text-[var(--color-ink-soft)] leading-[1.6]">
-              {check.issue}
+              {check.problem || check.issue}
+            </div>
+          ) : null}
+          {(check.expected || check.actual) ? (
+            <div className="mt-1 grid grid-cols-1 gap-1 text-[11px] text-[var(--color-ink-mute)]">
+              {check.expected ? <div>应为：{check.expected}</div> : null}
+              {check.actual ? <div>实际：{check.actual}</div> : null}
             </div>
           ) : null}
           {check.suggestion ? (
@@ -150,4 +194,11 @@ function ReviewCheckRow({ check }: { check: CheckItem }) {
       </div>
     </div>
   );
+}
+
+function formatRequirementRef(ref: NonNullable<CheckItem["requirement_ref"]>) {
+  const page = ref.page ? `P.${ref.page}` : "";
+  const path = ref.field_path || "";
+  const quote = ref.quote ? ref.quote.slice(0, 32) : "";
+  return [page, path, quote].filter(Boolean).join(" · ") || "来源";
 }
