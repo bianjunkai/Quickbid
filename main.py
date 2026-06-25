@@ -7,6 +7,7 @@
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from datetime import datetime
@@ -34,6 +35,7 @@ from agents.bid_parser.marker_scanner import (
     scan_markers,
     summarize_markers,
 )
+from agents.bid_parser.schema import k_field_value
 
 # ---- 环境变量加载 ----
 # 优先从 .env 读 TENDER_DEEPSEEK_API_KEY 等敏感信息（已在 .gitignore 中）
@@ -112,6 +114,15 @@ class ParsedDataPatchRequest(BaseModel):
     patches: list[ParsedDataPatchItem]
 
 
+class PriceCalculationRequest(BaseModel):
+    lowest_price: float
+    main_price: float
+    competitor_price: float
+    low_price_ratio: Optional[float] = None
+    highest_limit: Optional[float] = None
+    price_score_max: Optional[float] = None
+
+
 CORRECTION_FIELD_ALIASES = {
     "项目名称": "K01_项目名称",
     "项目名": "K01_项目名称",
@@ -122,6 +133,17 @@ CORRECTION_FIELD_ALIASES = {
     "预算金额": "K04_预算金额",
     "控制价": "K04_预算金额",
     "最高限价": "K04_预算金额",
+    "评分标准": "K07_评分标准",
+    "技术要求": "K08_技术要求",
+    "商务资质要求": "K09_商务资质要求",
+    "资质要求": "K09_商务资质要求",
+    "星标项": "K10_星标项",
+    "废标条款": "K11_废标条款",
+    "章节模板要求": "K12_章节模板要求",
+    "模板要求": "K12_章节模板要求",
+    "偏离表格式要求": "K13_偏离表格式要求",
+    "偏离表要求": "K13_偏离表格式要求",
+    "演示要求": "K14_演示要求",
 }
 
 
@@ -169,6 +191,22 @@ def create_project(req: CreateProjectRequest):
         "tender_file_path": str(tender_path),
         "message": f"项目已创建，请将招标文件上传到：{tender_path}"
     }
+
+
+def _project_dir_for_delete(project: Project) -> Optional[Path]:
+    """Return the project runtime directory only when it is safe to remove."""
+    if not project.tender_file_path:
+        return None
+
+    project_dir = Path(project.tender_file_path).expanduser().parent.resolve()
+    projects_root = PROJECTS_DIR.expanduser().resolve()
+    try:
+        project_dir.relative_to(projects_root)
+    except ValueError:
+        return None
+    if project_dir == projects_root:
+        return None
+    return project_dir
 
 
 @app.get("/projects")
@@ -329,6 +367,227 @@ def _export_format_from_message(msg: str) -> str:
     return "markdown"
 
 
+def _parse_money_to_wan(value: Any) -> float | None:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, dict):
+        for key in ("amount", "value", "budget", "price"):
+            if key in value:
+                parsed = _parse_money_to_wan(value.get(key))
+                if parsed is not None:
+                    return parsed
+        return None
+    text = str(value).replace(",", "").strip()
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(万元|万|元)?", text)
+    if not m:
+        return None
+    amount = float(m.group(1))
+    unit = m.group(2) or ""
+    return amount / 10000 if unit == "元" else amount
+
+
+def _format_wan(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:,.2f} 万元" if abs(value) >= 100 else f"{value:.4f} 万元"
+
+
+def _extract_price_score_max(parsed: dict[str, Any]) -> float | None:
+    scoring = parsed.get("scoring") or {}
+    if isinstance(scoring, dict):
+        for dim in scoring.get("dimensions") or []:
+            if not isinstance(dim, dict):
+                continue
+            name = str(dim.get("name") or "")
+            if any(kw in name for kw in ("价格", "报价", "投标报价")):
+                score = dim.get("max_score")
+                if isinstance(score, (int, float)) and score > 0:
+                    return float(score)
+                parsed_score = _parse_money_to_wan(score)
+                if parsed_score:
+                    return parsed_score
+        ratio = scoring.get("price_ratio")
+        if isinstance(ratio, (int, float)) and ratio > 0:
+            return float(ratio)
+
+    text = str(k_field_value(parsed.get("K07_评分标准")) or "")
+    m = re.search(r"(?:价格|报价)[^。；;\n]{0,20}?(\d+(?:\.\d+)?)\s*分", text)
+    return float(m.group(1)) if m else None
+
+
+def _extract_low_price_ratio(parsed: dict[str, Any], msg: str = "") -> float | None:
+    text = msg or ""
+    scoring = parsed.get("scoring") or {}
+    if isinstance(scoring, dict):
+        low_price = scoring.get("low_price_review") or {}
+        if isinstance(low_price, dict):
+            text += " " + str(low_price.get("trigger") or "")
+    for field_key in ("K07_评分标准", "K10_星标项", "K11_废标条款"):
+        value = k_field_value(parsed.get(field_key))
+        if isinstance(value, list):
+            text += " " + " ".join(str(v) for v in value)
+        elif value:
+            text += " " + str(value)
+
+    patterns = [
+        r"(?:低价|异常低价|低价审核|低价线|触发比例|预警线|低价阈值)[^%]{0,40}?(\d+(?:\.\d+)?)\s*%",
+        r"(?:最高限价|预算|控制价)[^%]{0,40}?(\d+(?:\.\d+)?)\s*%",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text)
+        if m:
+            value = float(m.group(1))
+            return value / 100 if value > 1 else value
+    return None
+
+
+def _extract_labeled_price(msg: str, labels: list[str]) -> float | None:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    m = re.search(
+        rf"(?:{label_pattern})[^\d]{{0,20}}(\d+(?:\.\d+)?)\s*(万元|万|元)?",
+        msg,
+    )
+    if not m:
+        return None
+    return _parse_money_to_wan("".join(part or "" for part in m.groups()))
+
+
+def _extract_price_calc_inputs(msg: str, parsed: dict[str, Any]) -> dict[str, Any]:
+    inputs: dict[str, Any] = {
+        "lowest_price": _extract_labeled_price(msg, ["最低报价", "最低价", "最低", "基准价"]),
+        "main_price": _extract_labeled_price(msg, ["主标报价", "主标", "我方报价", "我方", "本方报价"]),
+        "competitor_price": _extract_labeled_price(msg, ["竞争对手报价", "对手报价", "竞争对手", "对手"]),
+        "low_price_ratio": _extract_low_price_ratio(parsed, msg),
+        "highest_limit": None,
+        "price_score_max": _extract_price_score_max(parsed),
+    }
+    explicit_limit = re.search(
+        r"(?:最高限价|预算|控制价)[^\d]{0,12}(\d+(?:\.\d+)?)\s*(万元|万|元)?",
+        msg,
+    )
+    if explicit_limit:
+        inputs["highest_limit"] = _parse_money_to_wan(
+            "".join(part or "" for part in explicit_limit.groups())
+        )
+    else:
+        base = parsed.get("base") or {}
+        inputs["highest_limit"] = (
+            _parse_money_to_wan(k_field_value(parsed.get("K04_预算金额")))
+            or _parse_money_to_wan(base.get("budget") if isinstance(base, dict) else None)
+        )
+
+    m_score = re.search(r"(?:价格分|报价分|价格满分|价格权重)[^\d]{0,12}(\d+(?:\.\d+)?)\s*(?:分|%)?", msg)
+    if m_score:
+        inputs["price_score_max"] = float(m_score.group(1))
+
+    m_ratio = re.search(r"(?:低价比例|异常低价比例|低价线|低价阈值|触发比例)[^\d]{0,12}(\d+(?:\.\d+)?)\s*%", msg)
+    if m_ratio:
+        inputs["low_price_ratio"] = float(m_ratio.group(1)) / 100
+
+    money_mentions = [
+        _parse_money_to_wan("".join(part or "" for part in m.groups()))
+        for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(万元|万|元)", msg)
+    ]
+    if any(inputs[key] is None for key in ("lowest_price", "main_price", "competitor_price")) and len(money_mentions) >= 3:
+        quote_values = [v for v in money_mentions if v is not None][-3:]
+        if len(quote_values) == 3:
+            inputs["lowest_price"] = inputs["lowest_price"] or quote_values[0]
+            inputs["main_price"] = inputs["main_price"] or quote_values[1]
+            inputs["competitor_price"] = inputs["competitor_price"] or quote_values[2]
+    return inputs
+
+
+def _calculate_price_scores(
+    parsed: dict[str, Any],
+    *,
+    lowest_price: float | None,
+    main_price: float | None,
+    competitor_price: float | None,
+    low_price_ratio: float | None = None,
+    highest_limit: float | None = None,
+    price_score_max: float | None = None,
+) -> dict[str, Any]:
+    price_score_max = price_score_max or _extract_price_score_max(parsed) or 30.0
+    low_price_ratio = low_price_ratio or _extract_low_price_ratio(parsed) or 0.8
+    highest_limit = highest_limit or _parse_money_to_wan(k_field_value(parsed.get("K04_预算金额")))
+
+    missing = []
+    for key, value, label in [
+        ("lowest_price", lowest_price, "最低报价"),
+        ("main_price", main_price, "主标报价"),
+        ("competitor_price", competitor_price, "竞争对手报价"),
+    ]:
+        if value is None or value <= 0:
+            missing.append({"field": key, "label": label})
+    if highest_limit is None or highest_limit <= 0:
+        missing.append({"field": "highest_limit", "label": "最高限价"})
+    if price_score_max is None or price_score_max <= 0:
+        missing.append({"field": "price_score_max", "label": "价格分满分"})
+    if low_price_ratio is None or low_price_ratio <= 0:
+        missing.append({"field": "low_price_ratio", "label": "异常低价触发比例"})
+    if missing:
+        return {
+            "ok": False,
+            "missing": missing,
+            "message": "价格测算缺少必要参数",
+            "action_hint": "请补充：最低报价、主标报价、竞争对手报价、最高限价、价格分满分或低价比例。",
+        }
+
+    benchmark = min(lowest_price, main_price, competitor_price)
+    low_price_threshold = highest_limit * low_price_ratio
+    rows = []
+    for key, label, price in [
+        ("lowest", "最低报价", lowest_price),
+        ("main", "主标报价", main_price),
+        ("competitor", "竞争对手报价", competitor_price),
+    ]:
+        score = price_score_max * benchmark / price
+        rows.append({
+            "key": key,
+            "label": label,
+            "price": round(price, 4),
+            "price_display": _format_wan(price),
+            "score": round(score, 4),
+            "score_display": f"{score:.4f}",
+            "score_diff_to_main": None,
+            "price_diff_to_main": None,
+            "triggers_low_price": price < low_price_threshold,
+        })
+
+    main_row = next(row for row in rows if row["key"] == "main")
+    for row in rows:
+        row["score_diff_to_main"] = round(row["score"] - main_row["score"], 4)
+        row["price_diff_to_main"] = round(row["price"] - main_row["price"], 4)
+
+    score_by_key = {row["key"]: row["score"] for row in rows}
+    return {
+        "ok": True,
+        "method": "最低报价基准法",
+        "formula": "价格分 = 价格分满分 × 最低报价 / 当前报价",
+        "price_score_max": round(price_score_max, 4),
+        "benchmark_price": round(benchmark, 4),
+        "benchmark_price_display": _format_wan(benchmark),
+        "highest_limit": round(highest_limit, 4),
+        "highest_limit_display": _format_wan(highest_limit),
+        "low_price_ratio": round(low_price_ratio, 6),
+        "low_price_ratio_display": f"{low_price_ratio * 100:.2f}%",
+        "low_price_threshold": round(low_price_threshold, 4),
+        "low_price_threshold_display": _format_wan(low_price_threshold),
+        "rows": rows,
+        "pairwise_score_diff": {
+            "main_vs_lowest": round(score_by_key["main"] - score_by_key["lowest"], 4),
+            "main_vs_competitor": round(score_by_key["main"] - score_by_key["competitor"], 4),
+            "competitor_vs_lowest": round(score_by_key["competitor"] - score_by_key["lowest"], 4),
+        },
+        "any_low_price_risk": any(row["triggers_low_price"] for row in rows),
+        "message": "价格测算完成",
+    }
+
+
+def _should_run_price_calculator(msg: str) -> bool:
+    return bool(re.search(r"价格.*(测算|计算|打分|得分)|报价.*(测算|计算|打分|得分)|异常低价.*(测算|计算|判断)|低价线", msg))
+
+
 def _should_start_parse_from_message(msg: str, project_status: str | None = None) -> bool:
     """Return True when a chat message is asking to parse the uploaded tender file."""
     text = (msg or "").strip()
@@ -415,11 +674,13 @@ def _export_tender_file(tender: Tender, fmt: str) -> dict:
 
 def _volume_label(volume: str) -> str:
     return {
-        "commercial": "商务标",
-        "technical": "技术标",
-        "price": "报价标",
-        "other": "其他",
-    }.get(volume or "other", "其他")
+        "commercial": "商务文件",
+        "technical": "技术文件",
+    }.get(volume or "commercial", "商务文件")
+
+
+def _outline_volume(volume: str) -> str:
+    return "technical" if volume == "technical" else "commercial"
 
 
 def _format_outline_refs(refs: list[dict[str, Any]] | None) -> str:
@@ -428,11 +689,20 @@ def _format_outline_refs(refs: list[dict[str, Any]] | None) -> str:
     parts = []
     for ref in refs[:3]:
         page = ref.get("page")
+        display_label = (ref.get("label") or "").strip()
         quote = (ref.get("quote") or "").strip()
-        field_path = ref.get("field_path") or ""
-        label = f"P.{page}" if page else field_path or "来源"
-        if quote:
-            label += f"：{quote[:80]}"
+        if page:
+            label = f"P.{page}"
+            if display_label:
+                label += f"：{display_label[:80]}"
+            elif quote:
+                label += f"：{quote[:80]}"
+        elif display_label:
+            label = display_label[:80]
+        elif quote:
+            label = quote[:80]
+        else:
+            label = "来源未定位"
         parts.append(label)
     return "；".join(parts)
 
@@ -451,30 +721,33 @@ def _build_outline_markdown(project: Project, outline: list[dict[str, Any]]) -> 
         "",
     ])
 
-    current_volume = None
-    for idx, ch in enumerate(outline, 1):
-        volume = ch.get("volume", "other")
-        if volume != current_volume:
-            current_volume = volume
-            lines.extend(["", f"### {_volume_label(volume)}", ""])
-        no = ch.get("no", idx)
-        title = ch.get("title") or f"第{no}章"
-        category = ch.get("category") or "未分类"
-        source = ch.get("source") or "unknown"
-        lines.append(f"{no}. **{title}**")
-        lines.append(f"   - 分类: `{category}`")
-        lines.append(f"   - 来源: `{source}`")
-        lines.append(
-            f"   - 投标要求位置: {_format_outline_refs(ch.get('requirement_refs'))}"
-        )
-        lines.append(
-            f"   - 评分位置: {_format_outline_refs(ch.get('scoring_refs'))}"
-        )
-        for sub in ch.get("subsections") or []:
-            sub_title = sub.get("title") if isinstance(sub, dict) else str(sub)
-            if sub_title:
-                lines.append(f"   - {sub_title}")
-        lines.append("")
+    grouped = {"commercial": [], "technical": []}
+    for ch in outline:
+        volume = _outline_volume(ch.get("volume", "commercial"))
+        grouped[volume].append(ch)
+
+    for volume, chapters in grouped.items():
+        if not chapters:
+            continue
+        lines.extend(["", f"### {_volume_label(volume)}", ""])
+        for no, ch in enumerate(chapters, 1):
+            title = ch.get("title") or f"第{no}章"
+            category = ch.get("category") or "未分类"
+            source = ch.get("source") or "unknown"
+            lines.append(f"{no}. **{title}**")
+            lines.append(f"   - 分类: `{category}`")
+            lines.append(f"   - 来源: `{source}`")
+            lines.append(
+                f"   - 投标要求位置: {_format_outline_refs(ch.get('requirement_refs'))}"
+            )
+            lines.append(
+                f"   - 评分位置: {_format_outline_refs(ch.get('scoring_refs'))}"
+            )
+            for sub in ch.get("subsections") or []:
+                sub_title = sub.get("title") if isinstance(sub, dict) else str(sub)
+                if sub_title:
+                    lines.append(f"   - {sub_title}")
+            lines.append("")
 
     return "\n".join(lines).strip() + "\n"
 
@@ -547,12 +820,26 @@ def delete_project(project_id: int):
     if not project:
         raise HTTPException(404, "项目不存在")
 
-    # 清理关联数据：材料使用记录 → 标书 → 项目
-    session.query(MaterialUsage).filter(MaterialUsage.project_id == project_id).delete()
-    session.query(Tender).filter(Tender.project_id == project_id).delete()
-    session.delete(project)
-    session.commit()
-    return {"message": "项目已删除"}
+    project_dir = _project_dir_for_delete(project)
+
+    try:
+        # 清理关联数据：材料使用记录 → 标书 → 项目
+        session.query(MaterialUsage).filter(MaterialUsage.project_id == project_id).delete()
+        session.query(Tender).filter(Tender.project_id == project_id).delete()
+        session.delete(project)
+        if project_dir and project_dir.exists():
+            shutil.rmtree(project_dir)
+        session.commit()
+    except OSError as exc:
+        session.rollback()
+        raise HTTPException(500, f"项目文件夹删除失败：{exc}") from exc
+    except Exception:
+        session.rollback()
+        raise
+    return {
+        "message": "项目已删除",
+        "deleted_project_dir": str(project_dir) if project_dir else None,
+    }
 
 
 @app.put("/projects/{project_id}/messages")
@@ -1206,7 +1493,10 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
 
     # ---- parsed-data natural-language corrections ----
     correction_patches = (
-        _extract_parsed_data_patch_proposals(msg)
+        _extract_parsed_data_patch_proposals(
+            msg,
+            json.loads(project.parsed_data) if project.parsed_data else {},
+        )
         if project.parsed_data else []
     )
     if correction_patches:
@@ -1227,6 +1517,29 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
                 "_correction_applied": correction_result["applied"],
                 "message": correction_result["message"],
                 "correction_hint": "修正已写入解析数据；确认无误后说「继续」生成提纲。",
+            },
+        ):
+            yield ev
+        for ev in _sse_finish_sync():
+            yield ev
+        return
+
+    # ---- price calculation tool ----
+    if _should_run_price_calculator(msg):
+        parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+        inputs = _extract_price_calc_inputs(msg, parsed)
+        result = _calculate_price_scores(parsed, **inputs)
+        for ev in _sse_tool_sync(
+            "priceCalculator",
+            {"projectId": project_id, **inputs},
+            {
+                **result,
+                "inputs": inputs,
+                "action_hint": (
+                    "可补充“低价比例80%、最高限价900万、价格分30分、最低报价720万、主标报价760万、对手报价780万”。"
+                    if not result.get("ok")
+                    else "如要复算，可直接给新的最低报价、主标报价和竞争对手报价。"
+                ),
             },
         ):
             yield ev
@@ -1389,6 +1702,7 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
         "parsed": WorkflowStep.AWAIT_PARSE_CONFIRM,
         "outline_generating": WorkflowStep.AWAIT_OUTLINE_CONFIRM,
         "materials_preparing": WorkflowStep.AWAIT_CHAPTER_CONFIRM,
+        "deviation_preparing": WorkflowStep.AWAIT_DEVIATION_CONFIRM,
         "generating": WorkflowStep.AWAIT_DRAFT_CONFIRM,
         "generated": WorkflowStep.AWAIT_DRAFT_CONFIRM,
         "reviewing": WorkflowStep.AWAIT_REVIEW_ACTION,
@@ -1417,6 +1731,7 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             "parsed": "outlineDesign",
             "outline_generating": "matchMaterials",
             "materials_preparing": "generateTender",
+            "deviation_preparing": "generateTender",
         }.get(project.status)
     elif re.search(r"生成|开始生成", msg):
         state_tool = "generateTender"
@@ -1440,6 +1755,9 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
             for ev in _sse_text_sync("🔍 匹配材料中..."):
                 yield ev
         elif project.status == "materials_preparing":
+            for ev in _sse_text_sync("📋 准备偏离表确认项..."):
+                yield ev
+        elif project.status == "deviation_preparing":
             for ev in _sse_text_sync("📝 生成标书中（多 Agent 串行，可能需要数分钟）..."):
                 yield ev
         elif "陪标" in msg:
@@ -1475,6 +1793,18 @@ async def _run_chat_sse(project_id: int, last_user_msg: str):
                 "chapters": result["chapters"],
                 "message": message,
                 "action_hint": "可以告诉我需要替换哪个章节，或说'继续'进入生成。",
+            },
+        ):
+            yield ev
+        emitted_tool = True
+    if "deviation_preview" in result:
+        for ev in _sse_tool_sync(
+            "confirmDeviation",
+            {"projectId": project_id, "tenderType": "main"},
+            {
+                **result["deviation_preview"],
+                "message": message,
+                "action_hint": "确认无误请说「确认」或「继续」；需要补充时说「补充商务偏离：...」或「补充技术偏离：...」。",
             },
         ):
             yield ev
@@ -1724,7 +2054,78 @@ def _set_path_value(data: dict, field_path: str, value: Any) -> Any:
     return old
 
 
-def _extract_parsed_data_patch_proposals(msg: str) -> list[ParsedDataPatchItem]:
+def _source_page_patch_for_field(
+    parsed: dict[str, Any],
+    field_path: str,
+    page: int,
+    note: str,
+) -> ParsedDataPatchItem:
+    field = parsed.get(field_path) if isinstance(parsed, dict) else None
+    if (
+        (isinstance(field, dict) and "items" in field)
+        or field_path in ("K10_星标项", "K11_废标条款")
+    ):
+        items = field.get("items") if isinstance(field, dict) else []
+        count = len(items) if isinstance(items, list) and items else 1
+        return ParsedDataPatchItem(
+            field_path=f"{field_path}.source_pages",
+            value=[page] * count,
+            note=note,
+            source="chat_nl_page",
+        )
+    return ParsedDataPatchItem(
+        field_path=f"{field_path}.source_page",
+        value=page,
+        note=note,
+        source="chat_nl_page",
+    )
+
+
+def _extract_source_page_patch_proposals(
+    msg: str,
+    parsed: dict[str, Any] | None = None,
+) -> list[ParsedDataPatchItem]:
+    text = (msg or "").strip()
+    if not text:
+        return []
+    parsed = parsed or {}
+    patches: list[ParsedDataPatchItem] = []
+    seen: set[str] = set()
+    page_expr = r"(?:来源页|原文页|页码|所在页|在)\s*(?:是|为|改为|修改为)?\s*(?:第)?\s*(\d{1,4})\s*页?"
+
+    def add(field_path: str, page_text: str):
+        if field_path in seen:
+            return
+        page = int(page_text)
+        if page <= 0:
+            return
+        seen.add(field_path)
+        patches.append(_source_page_patch_for_field(
+            parsed,
+            field_path,
+            page,
+            f"自然语言页码修正：{text}",
+        ))
+
+    for m in re.finditer(rf"\b(K\d{{2}}_[\w\u4e00-\u9fff]+)\b[^，。,；;\n]{{0,20}}{page_expr}", text):
+        add(m.group(1), m.group(2))
+
+    for alias, field_path in sorted(
+        CORRECTION_FIELD_ALIASES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        m = re.search(rf"{re.escape(alias)}[^，。,；;\n]{{0,20}}{page_expr}", text)
+        if m:
+            add(field_path, m.group(1))
+
+    return patches
+
+
+def _extract_parsed_data_patch_proposals(
+    msg: str,
+    parsed: dict[str, Any] | None = None,
+) -> list[ParsedDataPatchItem]:
     """
     Convert common natural-language parsed-data corrections into explicit patches.
 
@@ -1740,6 +2141,8 @@ def _extract_parsed_data_patch_proposals(msg: str) -> list[ParsedDataPatchItem]:
     value = r"\s*([^，。,；;\n]+)"
     patches: list[ParsedDataPatchItem] = []
     seen: set[str] = set()
+    patches.extend(_extract_source_page_patch_proposals(text, parsed))
+    seen.update(p.field_path for p in patches)
 
     # Explicit K-field path: "K04_预算金额 改为 900万"
     for m in re.finditer(rf"\b(K\d{{2}}_[\w\u4e00-\u9fff]+)\b\s*{verb}{value}", text):
@@ -1837,6 +2240,25 @@ def patch_parsed_data(project_id: int, req: ParsedDataPatchRequest):
     session.commit()
 
     return result
+
+
+@app.post("/projects/{project_id}/price-calculator")
+def calculate_price(project_id: int, req: PriceCalculationRequest):
+    """Calculate bid price scores and abnormal-low-price risk."""
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    return _calculate_price_scores(
+        parsed,
+        lowest_price=req.lowest_price,
+        main_price=req.main_price,
+        competitor_price=req.competitor_price,
+        low_price_ratio=req.low_price_ratio,
+        highest_limit=req.highest_limit,
+        price_score_max=req.price_score_max,
+    )
 
 
 # ---- 材料库管理 ----
@@ -1969,10 +2391,10 @@ def list_tender_files(project_id: int, tender_id: int):
                 cat_no = head
                 cat_name = rest
         volume_label = {
-            "commercial": "商务标",
-            "technical": "技术标",
-            "price": "报价标",
-            "other": "其他",
+            "commercial": "商务文件",
+            "technical": "技术文件",
+            "price": "商务文件",
+            "other": "商务文件",
         }.get(prefix, prefix)
         display_name = f"{volume_label} / {cat_name}" if prefix else cat_name
         files = []

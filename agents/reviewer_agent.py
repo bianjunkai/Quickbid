@@ -358,23 +358,31 @@ class ReviewerAgent(BaseAgent):
             ))
 
         volumes = {ch.get("volume") for ch in outline if ch.get("volume")}
-        if "commercial" in volumes and "商务标" not in draft_content:
+        if (
+            "commercial" in volumes
+            and "商务文件" not in draft_content
+            and "商务标" not in draft_content
+        ):
             checks.append(self._issue(
                 check_id="C13_分卷一致性",
                 check_name="商务/技术分卷一致性",
-                problem="提纲包含商务标章节，但生成稿未显示商务标分卷",
-                expected="生成稿应包含“商务标”分卷标题",
-                actual="draft.md 中未找到“商务标”",
+                problem="提纲包含商务文件章节，但生成稿未显示商务文件分卷",
+                expected="生成稿应包含“商务文件”分卷标题",
+                actual="draft.md 中未找到“商务文件”",
                 suggestion="重新生成主标书，确保分卷目录和正文同步。",
                 draft_ref={"path": draft_path, "heading": "目录"},
             ))
-        if "technical" in volumes and "技术标" not in draft_content:
+        if (
+            "technical" in volumes
+            and "技术文件" not in draft_content
+            and "技术标" not in draft_content
+        ):
             checks.append(self._issue(
                 check_id="C13_分卷一致性",
                 check_name="商务/技术分卷一致性",
-                problem="提纲包含技术标章节，但生成稿未显示技术标分卷",
-                expected="生成稿应包含“技术标”分卷标题",
-                actual="draft.md 中未找到“技术标”",
+                problem="提纲包含技术文件章节，但生成稿未显示技术文件分卷",
+                expected="生成稿应包含“技术文件”分卷标题",
+                actual="draft.md 中未找到“技术文件”",
                 suggestion="重新生成主标书，确保分卷目录和正文同步。",
                 draft_ref={"path": draft_path, "heading": "目录"},
             ))

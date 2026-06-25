@@ -22,10 +22,8 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 const VOLUME_LABEL: Record<string, string> = {
-  commercial: "商务标",
-  technical: "技术标",
-  price: "报价标",
-  other: "其他",
+  commercial: "商务文件",
+  technical: "技术文件",
 };
 
 type Subsection = { id?: string; title?: string };
@@ -33,6 +31,7 @@ type EvidenceRef = {
   page?: number | null;
   quote?: string;
   field_path?: string;
+  label?: string;
 };
 type Chapter = {
   id?: string;
@@ -194,12 +193,13 @@ export function OutlineToolResult({
 }
 
 function groupByVolume(outline: Chapter[]) {
-  const order = ["commercial", "technical", "price", "other"];
+  const order = ["commercial", "technical"];
   const map = new Map<string, Array<{ chapter: Chapter; index: number }>>();
-  outline.forEach((chapter, index) => {
-    const volume = chapter.volume || "other";
+  outline.forEach((chapter) => {
+    const volume = chapter.volume === "technical" ? "technical" : "commercial";
     if (!map.has(volume)) map.set(volume, []);
-    map.get(volume)!.push({ chapter, index });
+    const items = map.get(volume)!;
+    items.push({ chapter, index: items.length });
   });
   return Array.from(map.entries())
     .sort((a, b) => {
@@ -211,7 +211,7 @@ function groupByVolume(outline: Chapter[]) {
 }
 
 function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
-  const no = chapter.no ?? index + 1;
+  const no = index + 1;
   const cat = chapter.category ?? "";
   const catLabel = CATEGORY_LABEL[cat] ?? cat;
   const subs = chapter.subsections ?? [];
@@ -274,11 +274,11 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
 }
 
 function firstRefLabel(refs?: EvidenceRef[]) {
-  const ref = refs?.find((r) => r.page || r.field_path || r.quote);
+  const ref = refs?.find((r) => r.page || r.label || r.quote);
   if (!ref) return "";
   if (ref.page) return `P.${ref.page}`;
-  if (ref.field_path) return ref.field_path;
-  return ref.quote?.slice(0, 24) || "";
+  if (ref.label) return ref.label.slice(0, 24);
+  return ref.quote?.slice(0, 24) || "来源未定位";
 }
 
 function ValidationCard({ validation }: { validation: ValidationResult }) {

@@ -16,7 +16,9 @@ import { cn } from "@/lib/utils";
 type GeneratedChapter = {
   chapter_id?: string;
   no?: number;
+  volume_no?: number;
   title?: string;
+  volume?: string;
   category?: string;
   content?: string;
   material_title?: string;
@@ -66,7 +68,7 @@ export function GeneratorToolResult({
 }: Props) {
   // 统一两种 payload 形态
   const chapters: GeneratedChapter[] = useMemo(() => {
-    return (
+    return withVolumeNumbers(
       output?.draft_chapters ??
       output?.draft?.chapters ??
       []
@@ -153,7 +155,7 @@ export function GeneratorToolResult({
           <div className="px-4 py-2.5 bg-[var(--color-primary-bg)] border-t border-[var(--color-primary-tint)] flex items-start gap-2">
             <Check className="w-3 h-3 text-[var(--color-primary-deep)] mt-0.5 shrink-0" />
             <div className="text-[12px] text-[var(--color-primary-deep)] leading-relaxed">
-              → 已归档到右侧项目文件面板。点击文件可全屏查看。
+              → 已归档到右侧项目文件面板。商务/技术偏离表在「商务/技术偏离表（deviation.md）」中，点击可全屏查看。
             </div>
           </div>
         )}
@@ -255,7 +257,7 @@ function FileCategorizationPreview({
                 className="text-[12px] text-[var(--color-ink-soft)] leading-relaxed flex items-center gap-1.5"
               >
                 <span className="text-[var(--color-ink-mute)] font-mono tabular-nums w-5">
-                  {String(ch.no ?? i + 1).padStart(2, "0")}
+                  {String(displayChapterNo(ch, i)).padStart(2, "0")}
                 </span>
                 <span className="truncate" title={ch.title}>
                   {ch.title || "未命名章节"}
@@ -318,7 +320,12 @@ function groupByCategory(chapters: GeneratedChapter[]): Array<{
     .map(([category, list]) => ({
       category,
       label: prettyCategory(category),
-      chapters: list.sort((a, b) => (a.no ?? 0) - (b.no ?? 0)),
+      chapters: list.sort((a, b) => {
+        const av = a.volume === "technical" ? 1 : 0;
+        const bv = b.volume === "technical" ? 1 : 0;
+        if (av !== bv) return av - bv;
+        return (a.volume_no ?? a.no ?? 0) - (b.volume_no ?? b.no ?? 0);
+      }),
     }));
 }
 
@@ -331,15 +338,65 @@ function prettyCategory(cat: string): string {
 function fullDraftMarkdown(chapters: GeneratedChapter[]): string {
   // 复刻 GeneratorAgent._assemble_markdown 的最简版本（不依赖 K 字段）
   const parts: string[] = ["# 投标文件（主标）", "", "## 目录", ""];
-  for (const ch of chapters) {
-    parts.push(`- 第${ch.no ?? "?"}章 ${ch.title || ""}`);
+  const groups = groupByVolume(chapters);
+  for (const group of groups) {
+    parts.push(`### ${group.label}`, "");
+    group.chapters.forEach((ch, i) => {
+      parts.push(`- 第${displayChapterNo(ch, i)}章 ${ch.title || ""}`);
+    });
+    parts.push("");
   }
   parts.push("", "---", "");
-  for (const ch of chapters) {
-    parts.push((ch.content || "").trim());
-    parts.push("", "---", "");
+  for (const group of groups) {
+    parts.push(`## ${group.label}`, "");
+    for (const ch of group.chapters) {
+      parts.push((ch.content || "").trim());
+      parts.push("", "---", "");
+    }
   }
   return parts.join("\n");
+}
+
+function displayChapterNo(chapter: GeneratedChapter, index: number): number {
+  return chapter.volume_no ?? chapter.no ?? index + 1;
+}
+
+function withVolumeNumbers(chapters: GeneratedChapter[]): GeneratedChapter[] {
+  const counters = { commercial: 0, technical: 0 };
+  return chapters.map((chapter) => {
+    const volume = chapter.volume === "technical" ? "technical" : "commercial";
+    counters[volume] += 1;
+    return {
+      ...chapter,
+      volume,
+      volume_no: chapter.volume_no ?? counters[volume],
+    };
+  });
+}
+
+function groupByVolume(chapters: GeneratedChapter[]): Array<{
+  volume: "commercial" | "technical";
+  label: string;
+  chapters: GeneratedChapter[];
+}> {
+  const grouped: Record<"commercial" | "technical", GeneratedChapter[]> = {
+    commercial: [],
+    technical: [],
+  };
+  for (const ch of chapters) {
+    const volume = ch.volume === "technical" ? "technical" : "commercial";
+    grouped[volume].push(ch);
+  }
+  return (["commercial", "technical"] as const)
+    .filter((volume) => grouped[volume].length > 0)
+    .map((volume) => ({
+      volume,
+      label: volume === "technical" ? "技术文件" : "商务文件",
+      chapters: grouped[volume].map((ch, i) => ({
+        ...ch,
+        volume_no: ch.volume_no ?? i + 1,
+      })),
+    }));
 }
 
 async function copyAllChapters(chapters: GeneratedChapter[]) {

@@ -463,6 +463,7 @@ class BidParsePipeline:
             在 parsed 基础上添加 _validation 和补全的最终 dict
         """
         final = dict(parsed)  # 浅拷贝
+        self._augment_low_price_review(final, full_text)
         local_issues = self._local_validation(final)
         # 文本长度（即使 LLM 没填也保证前端能拿到）
         final.setdefault("meta", {})
@@ -472,6 +473,129 @@ class BidParsePipeline:
             "issues": local_issues,
         }
         return final
+
+    def _augment_low_price_review(self, final: dict, full_text: str):
+        """Ensure low/abnormally-low bid review clauses are preserved."""
+        clauses = self._find_low_price_review_clauses(full_text)
+        if not clauses:
+            return
+
+        first = clauses[0]
+        summary = "；".join(c["text"] for c in clauses[:3])
+        scoring = final.get("scoring")
+        if not isinstance(scoring, dict):
+            scoring = {}
+            final["scoring"] = scoring
+        low_price = scoring.get("low_price_review")
+        if not isinstance(low_price, dict):
+            low_price = {}
+            scoring["low_price_review"] = low_price
+        low_price.setdefault("trigger", first["text"])
+        low_price.setdefault("consequence", self._infer_low_price_consequence(summary))
+        low_price.setdefault("source_page", first["page"])
+
+        self._append_k_field_text(
+            final,
+            "K07_评分标准",
+            f"低价审核风险：{summary}",
+            first["page"],
+        )
+        self._append_k_array_item(
+            final,
+            "K10_星标项",
+            f"低价审核风险：{summary}",
+            first["page"],
+        )
+
+        marker_extractions = final.get("marker_extractions")
+        if not isinstance(marker_extractions, dict):
+            marker_extractions = {}
+            final["marker_extractions"] = marker_extractions
+        high_items = marker_extractions.get("high_items")
+        if not isinstance(high_items, list):
+            high_items = []
+            marker_extractions["high_items"] = high_items
+        exists = any(
+            "低价" in str(item.get("raw_text", ""))
+            for item in high_items
+            if isinstance(item, dict)
+        )
+        if not exists:
+            high_items.append({
+                "marker": "低价审核",
+                "source_page": first["page"],
+                "raw_text": summary,
+                "semantic": "报价阶段必须避免触发低价或异常低价审核",
+            })
+
+    @staticmethod
+    def _find_low_price_review_clauses(full_text: str) -> list[dict[str, Any]]:
+        keywords = [
+            "低价审核",
+            "异常低价",
+            "低于成本",
+            "明显低于其他投标",
+            "报价明显低",
+            "价格评审异常",
+            "低价风险",
+        ]
+        clauses: list[dict[str, Any]] = []
+        for page in extract_pages(full_text):
+            page_no = page.get("page")
+            text = page.get("text") or ""
+            for line in re.split(r"[\n。；;]", text):
+                line = re.sub(r"\s+", " ", line).strip()
+                if not line:
+                    continue
+                if any(kw in line for kw in keywords):
+                    clauses.append({
+                        "page": page_no if isinstance(page_no, int) else None,
+                        "text": line[:300],
+                    })
+                    break
+        return clauses[:5]
+
+    @staticmethod
+    def _infer_low_price_consequence(text: str) -> str:
+        if any(kw in text for kw in ["废标", "否决", "无效投标", "不推荐", "不作为中标"]):
+            return "可能导致否决、废标或不推荐中标"
+        if any(kw in text for kw in ["澄清", "说明", "证明"]):
+            return "可能要求投标人澄清、说明或提交证明材料"
+        return "报价阶段需避免触发低价或异常低价审核"
+
+    @staticmethod
+    def _append_k_field_text(final: dict, key: str, text: str, page: int | None):
+        field = final.get(key)
+        if isinstance(field, dict) and "value" in field:
+            value = str(field.get("value") or "")
+            if "低价" not in value and "异常低价" not in value:
+                field["value"] = f"{value}；{text}" if value and value != "未找到" else text
+            field.setdefault("source_page", page)
+            return
+        if not field or field == "未找到":
+            final[key] = make_k_field(text, source_page=page)
+
+    @staticmethod
+    def _append_k_array_item(final: dict, key: str, text: str, page: int | None):
+        field = final.get(key)
+        if isinstance(field, dict) and "items" in field:
+            items = field.get("items")
+            if not isinstance(items, list):
+                items = []
+                field["items"] = items
+            pages = field.get("source_pages")
+            if not isinstance(pages, list):
+                pages = []
+                field["source_pages"] = pages
+            if not any("低价" in str(item) for item in items):
+                items.append(text)
+                pages.append(page)
+            return
+        if isinstance(field, list):
+            if not any("低价" in str(item) for item in field):
+                field.append(text)
+            return
+        final[key] = {"items": [text], "source_pages": [page]}
 
     # ================================================================
     # Step 2: 标记语义识别

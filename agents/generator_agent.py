@@ -96,7 +96,9 @@ class GeneratorAgent(BaseAgent):
         consecutive_fails = 0
         aborted = False
 
-        for ch_outline in outline:
+        generation_outline = self._with_volume_numbers(outline)
+
+        for ch_outline in generation_outline:
             cid = ch_outline.get("id", "")
             match = chapters_by_id.get(cid) or {}
             file_path = match.get("file_path")
@@ -130,6 +132,7 @@ class GeneratorAgent(BaseAgent):
             assembled.append({
                 "chapter_id": cid,
                 "no": ch_outline.get("no"),
+                "volume_no": ch_outline.get("volume_no"),
                 "title": ch_outline.get("title", ""),
                 "volume": ch_outline.get("volume", "other"),
                 "category": ch_outline.get("category", ""),
@@ -152,7 +155,7 @@ class GeneratorAgent(BaseAgent):
             "errors": errors,
             "failed": aborted,
             "aborted": aborted,
-            "outline": outline,
+            "outline": generation_outline,
         }
 
     # ================================================================
@@ -278,12 +281,12 @@ class GeneratorAgent(BaseAgent):
             lines.append(f"- [{source_type}] {title}")
             for ref in (source.get("evidence") or [])[:2]:
                 page = f"P.{ref.get('page')} " if ref.get("page") else ""
+                label = (ref.get("label") or "").strip()
                 quote = (ref.get("quote") or "").strip()
-                field_path = ref.get("field_path") or ""
                 if quote:
                     lines.append(f"  - {page}{quote[:240]}")
-                elif field_path:
-                    lines.append(f"  - {field_path}")
+                elif label:
+                    lines.append(f"  - {page}{label[:120]}")
         return "\n".join(lines)
 
     # ================================================================
@@ -350,29 +353,24 @@ class GeneratorAgent(BaseAgent):
 
         parts.append("## 目录")
         parts.append("")
-        current_volume = None
-        for ch in chapters:
-            volume = ch.get("volume", "other")
-            if volume != current_volume:
-                current_volume = volume
-                parts.append(f"### {self._volume_label(volume)}")
-                parts.append("")
-            no = ch.get("no", "?")
-            title = ch.get("title", "")
-            parts.append(f"- 第{no}章 {title}")
+        grouped = self._group_chapters_by_volume(chapters)
+        for volume, items in grouped:
+            parts.append(f"### {self._volume_label(volume)}")
+            parts.append("")
+            for idx, ch in enumerate(items, 1):
+                no = ch.get("volume_no") or idx
+                title = ch.get("title", "")
+                parts.append(f"- 第{no}章 {title}")
         parts.append("")
 
-        current_volume = None
-        for ch in chapters:
-            volume = ch.get("volume", "other")
-            if volume != current_volume:
-                current_volume = volume
-                parts.append(f"## {self._volume_label(volume)}")
+        for volume, items in grouped:
+            parts.append(f"## {self._volume_label(volume)}")
+            parts.append("")
+            for ch in items:
+                parts.append(ch.get("content", "").rstrip())
                 parts.append("")
-            parts.append(ch.get("content", "").rstrip())
-            parts.append("")
-            parts.append("---")
-            parts.append("")
+                parts.append("---")
+                parts.append("")
 
         parts.extend([
             "## 附录 A: 商务/技术条款偏离表",
@@ -386,11 +384,47 @@ class GeneratorAgent(BaseAgent):
     @staticmethod
     def _volume_label(volume: str) -> str:
         return {
-            "commercial": "商务标",
-            "technical": "技术标",
-            "price": "报价标",
-            "other": "其他",
-        }.get(volume or "other", "其他")
+            "commercial": "商务文件",
+            "technical": "技术文件",
+        }.get(volume or "commercial", "商务文件")
+
+    @staticmethod
+    def _outline_volume(volume: str) -> str:
+        return "technical" if volume == "technical" else "commercial"
+
+    def _with_volume_numbers(
+        self,
+        chapters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        counters = {"commercial": 0, "technical": 0}
+        numbered: list[dict[str, Any]] = []
+        for ch in chapters:
+            volume = self._outline_volume(ch.get("volume", "commercial"))
+            counters[volume] += 1
+            volume_no = counters[volume]
+            item = dict(ch)
+            item["volume"] = volume
+            item["volume_no"] = volume_no
+            item["no"] = volume_no
+            numbered.append(item)
+        return numbered
+
+    def _group_chapters_by_volume(
+        self,
+        chapters: list[dict[str, Any]],
+    ) -> list[tuple[str, list[dict[str, Any]]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {
+            "commercial": [],
+            "technical": [],
+        }
+        for ch in chapters:
+            volume = self._outline_volume(ch.get("volume", "commercial"))
+            grouped[volume].append(ch)
+        return [
+            (volume, items)
+            for volume, items in grouped.items()
+            if items
+        ]
 
     # ================================================================
     # 辅助

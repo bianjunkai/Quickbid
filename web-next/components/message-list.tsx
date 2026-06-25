@@ -9,6 +9,8 @@ import { MatchToolResult } from "./tools/match-tool-result";
 import { GeneratorToolResult } from "./tools/generator-tool-result";
 import { ReviewToolResult } from "./tools/review-tool-result";
 import { ExportToolResult } from "./tools/export-tool-result";
+import { DeviationToolResult } from "./tools/deviation-tool-result";
+import { PriceCalculatorToolResult } from "./tools/price-calculator-tool-result";
 import { ToolFallback } from "./tools/tool-fallback";
 
 export function MessageList({
@@ -156,6 +158,12 @@ function ToolPart({
   if (toolName === "generateTender") {
     return <GeneratorToolResult state={state} input={input} output={output} errorText={errorText} />;
   }
+  if (toolName === "confirmDeviation") {
+    return <DeviationToolResult state={state} input={input} output={output} errorText={errorText} />;
+  }
+  if (toolName === "priceCalculator") {
+    return <PriceCalculatorToolResult state={state} input={input} output={output} errorText={errorText} />;
+  }
   if (toolName === "reviewTender") {
     return <ReviewToolResult state={state} output={output} errorText={errorText} />;
   }
@@ -190,10 +198,10 @@ function StreamingIndicator() {
 
 function EmptyHint() {
   const commands = [
-    { cmd: "放好了", desc: "开始解析招标文件", n: "01" },
-    { cmd: "继续", desc: "进入材料匹配", n: "02" },
-    { cmd: "生成", desc: "生成主标书", n: "03" },
-    { cmd: "终审", desc: "C01-C10 合规检查", n: "04" },
+    { cmd: "上传招标文件", desc: "点击右上角上传 PDF/DOCX", n: "01" },
+    { cmd: "文件已上传，请开始解析", desc: "自然语言触发解析", n: "02" },
+    { cmd: "预算来源页是第 5 页", desc: "可补充原文页码或修正字段", n: "03" },
+    { cmd: "继续", desc: "确认当前结果并进入下一步", n: "04" },
   ];
   return (
     <div className="max-w-2xl mx-auto py-8">
@@ -217,7 +225,7 @@ function EmptyHint() {
         <div className="px-5 py-3 border-b border-[var(--color-border)] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-3.5 h-3.5 text-[var(--color-primary)]" />
-            <span className="text-[12px] font-semibold text-[var(--color-ink)]">快捷指令</span>
+            <span className="text-[12px] font-semibold text-[var(--color-ink)]">工作流提示</span>
           </div>
           <span className="text-[10px] text-[var(--color-ink-mute)] font-mono">04 / 04</span>
         </div>

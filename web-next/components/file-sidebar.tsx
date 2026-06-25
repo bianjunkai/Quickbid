@@ -339,14 +339,24 @@ function FileRow({
   file: TenderFileEntry;
   onFileClick: (filePath: string) => void;
 }) {
+  const meta = topFileMeta(file.name);
+  const displayName = meta?.label ?? file.name;
+  const subLabel = meta?.subLabel;
   return (
     <button
       onClick={() => onFileClick(file.path)}
       className="group w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors text-left"
-      title={`${file.name} · ${file.size || 0} 字符`}
+      title={`${displayName} · ${file.name} · ${file.size || 0} 字符`}
     >
       <FileText className="w-3 h-3 text-[var(--color-ink-mute)] group-hover:text-[var(--color-primary)] shrink-0" />
-      <span className="truncate flex-1">{file.name}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{displayName}</span>
+        {subLabel && (
+          <span className="block text-[10px] text-[var(--color-ink-mute)] font-mono truncate">
+            {subLabel}
+          </span>
+        )}
+      </span>
       {file.chapter_no && (
         <span className="text-[10px] text-[var(--color-ink-mute)] font-mono tabular-nums">
           #{file.chapter_no}
@@ -354,6 +364,19 @@ function FileRow({
       )}
     </button>
   );
+}
+
+function topFileMeta(name: string): { label: string; subLabel: string } | null {
+  if (name === "cover.md") {
+    return { label: "封面与目录", subLabel: "cover.md" };
+  }
+  if (name === "draft.md") {
+    return { label: "主标正文", subLabel: "draft.md" };
+  }
+  if (name === "deviation.md") {
+    return { label: "商务/技术偏离表", subLabel: "deviation.md" };
+  }
+  return null;
 }
 
 function prettyCategory(category: string): string {

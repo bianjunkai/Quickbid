@@ -5,11 +5,12 @@ import { Paperclip, Send, Square, Plus, AtSign } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const QUICK_REPLIES: Record<string, string[]> = {
-  parsing: ["开始解析招标文件"],
-  parsed: ["继续"],
-  outline_generating: ["继续"],
+  parsing: ["文件已上传，请开始解析"],
+  parsed: ["继续", "价格测算"],
+  outline_generating: ["继续", "价格测算"],
   materials_preparing: ["生成"],
-  generated: ["终审", "生成陪标", "导出Word"],
+  deviation_preparing: ["确认", "补充技术偏离："],
+  generated: ["价格测算", "终审", "生成陪标", "导出Word"],
   reviewing: ["导出Word"],
   reviewed: ["生成陪标", "导出Word"],
   review_failed: ["终审"],
@@ -17,9 +18,11 @@ const QUICK_REPLIES: Record<string, string[]> = {
 };
 
 const QUICK_REPLY_DESC: Record<string, string> = {
-  开始解析招标文件: "读取并分析已上传的招标文件",
-  继续: "进入材料匹配",
+  "文件已上传，请开始解析": "读取并分析已上传的招标文件",
+  继续: "确认当前结果并进入下一步",
+  确认: "确认当前结果并继续",
   生成: "生成主标书",
+  价格测算: "计算报价得分并检查异常低价风险",
   生成陪标: "生成陪标并自动终审",
   终审: "C01-C10 合规检查",
   导出: "导出最终版本",
@@ -54,7 +57,7 @@ export function Composer({
     setInput("");
   };
 
-  const replies = QUICK_REPLIES[status] || ["开始解析招标文件", "继续", "生成", "终审", "导出"];
+  const replies = QUICK_REPLIES[status] || ["文件已上传，请开始解析", "继续", "生成", "终审", "导出"];
 
   return (
     <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">

@@ -285,6 +285,10 @@ QUICK_EXTRACTION_SYSTEM = """你是招标文件分析专家。请从以下招标
 - source_page / source_pages 的来源：文档中每页会被标记为 [PAGE: N]，请据此定位。
 - 无法确定页码时填 null，不要瞎猜。
 - K10/K11 是数组：items 与 source_pages 长度要一致；同一页有多个条款时该页码可以重复。
+- 必须特别识别“低价审核/异常低价审核/低于成本价/报价明显低于其他投标人/价格评审异常”等条款：
+  - 写入 K07_评分标准 的 value 摘要；
+  - 如果触发后可能影响中标、要求澄清、被否决或废标，也必须写入 K10_星标项或 K11_废标条款；
+  - 保留原文条件和来源页码，避免后续投标报价触发低价审核风险。
 如果某字段在文件中未找到，请把 value 填为"未找到"（数组则 items 为空数组、source_pages 为空数组）。
 仅返回 JSON，不要有其他文字。"""
 
@@ -399,6 +403,11 @@ FULL_PARSE_SYSTEM = """你是招标文件解析专家。给定完整招标文件
     "price_ratio": <number 0-100, 价格权重>,
     "tech_ratio": <number 0-100, 技术权重>,
     "commercial_ratio": <number 0-100, 商务权重>,
+    "low_price_review": {
+      "trigger": "string|null, 低价/异常低价审核触发条件原文摘要",
+      "consequence": "string|null, 触发后的澄清/否决/废标/扣分后果",
+      "source_page": <int|null>
+    },
     "dimensions": [
       {
         "name": "string, 评分维度如'技术方案'",
@@ -510,7 +519,12 @@ FULL_PARSE_SYSTEM = """你是招标文件解析专家。给定完整招标文件
 5. **绝不编造**：原文中没有的信息不要补全。如果只有部分信息能确定，其他字段填 null。
 6. **标记抽取尽量穷尽**：原文中每个 ★/▲/●/◆ 等符号对应的条款都要在 marker_extractions 对应优先级数组里出现。
 7. **跨章推理**：K04 value 与 base.budget.amount 应该一致；K05 与 logistics.bid_submission.deadline 应该一致。
-8. **输出必须是合法 JSON**，放在 ```json 代码块中或直接输出。
+8. **低价审核风险必须识别**：凡出现“低价审核/异常低价审核/低于成本价/报价明显低于其他投标人/价格评审异常”等条款：
+   - 写入 scoring.low_price_review；
+   - 在 K07_评分标准 中摘要说明；
+   - 若可能导致澄清、否决、废标或影响中标，写入 K10_星标项或 K11_废标条款；
+   - 保留原文条件和 source_page，后续生成报价标时必须避免触发。
+9. **输出必须是合法 JSON**，放在 ```json 代码块中或直接输出。
 """
 
 

@@ -30,6 +30,7 @@ class WorkflowStep(str):
     AWAIT_PARSE_CONFIRM = "await_parse_confirm"
     AWAIT_OUTLINE_CONFIRM = "await_outline_confirm"
     AWAIT_CHAPTER_CONFIRM = "await_chapter_confirm"
+    AWAIT_DEVIATION_CONFIRM = "await_deviation_confirm"
     GENERATING_DRAFT = "generating_draft"
     AWAIT_DRAFT_CONFIRM = "await_draft_confirm"
     AWAIT_REVIEW_ACTION = "await_review_action"
@@ -90,6 +91,7 @@ class Orchestrator:
             WorkflowStep.AWAIT_PARSE_CONFIRM: self._handle_await_parse_confirm,
             WorkflowStep.AWAIT_OUTLINE_CONFIRM: self._handle_await_outline_confirm,
             WorkflowStep.AWAIT_CHAPTER_CONFIRM: self._handle_await_chapter_confirm,
+            WorkflowStep.AWAIT_DEVIATION_CONFIRM: self._handle_await_deviation_confirm,
             WorkflowStep.AWAIT_DRAFT_CONFIRM: self._handle_await_draft_confirm,
             WorkflowStep.AWAIT_REVIEW_ACTION: self._handle_await_review_action,
         }
@@ -405,7 +407,10 @@ class Orchestrator:
                         a.get("material_title", "") for a in alts
                     )
                 )
-        lines.append("\n说「继续」进入生成，或者告诉我需要换哪个章节")
+        lines.append(
+            "\n说「继续」进入偏离表确认；确认后会生成 `deviation.md`，"
+            "在右侧主标文件中打开「商务/技术偏离表」。"
+        )
 
         return {
             "message": "\n".join(lines),
@@ -414,10 +419,32 @@ class Orchestrator:
 
     def _handle_await_chapter_confirm(self, msg: str) -> dict[str, Any]:
         if re.search(r"继续|确认|可以|好的|生成", msg):
-            return self._start_generation()
+            return self._start_deviation_confirmation()
         if re.search(r"换|替换|换一个", msg):
             return {"message": "好的，已重新推荐了另一个材料，请确认是否合适"}
-        return {"message": "可以说「继续」进入生成，或者告诉我需要换哪个章节"}
+        return {
+            "message": (
+                "可以说「继续」进入偏离表确认；确认后会生成 `deviation.md`，"
+                "也可以告诉我需要换哪个章节。"
+            )
+        }
+
+    def _handle_await_deviation_confirm(self, msg: str) -> dict[str, Any]:
+        if re.search(r"继续|确认|可以|好的|生成", msg):
+            self._confirm_deviation_items()
+            return self._start_generation()
+
+        changed = self._apply_deviation_message(msg)
+        if changed:
+            return self._start_deviation_confirmation()
+
+        return {
+            "message": (
+                "请确认偏离表条目是否正确。可说「确认」进入生成；"
+                "也可以说「补充商务偏离：...」或「补充技术偏离：...」。"
+            ),
+            "deviation_preview": self._deviation_preview(),
+        }
 
     def _handle_await_draft_confirm(self, msg: str) -> dict[str, Any]:
         if re.search(r"终审|检查", msg):
@@ -507,6 +534,115 @@ class Orchestrator:
         lines.append("\n请确认以上信息是否正确。有错误的请告诉我，例如：「预算金额应该是900万」")
 
         return {"message": "\n".join(lines), "parsed_data": parsed_data}
+
+    def _start_deviation_confirmation(self) -> dict[str, Any]:
+        """Preview deviation-table rows before writing deviation.md."""
+        preview = self._deviation_preview()
+        self.ctx.parsed_data["_pending_deviation_items"] = {
+            "business": preview["business_items"],
+            "technical": preview["technical_items"],
+        }
+
+        session = get_session()
+        project = session.get(Project, self.ctx.project_id)
+        if project:
+            project.parsed_data = json.dumps(self.ctx.parsed_data, ensure_ascii=False)
+            project.status = "deviation_preparing"
+            session.commit()
+
+        self.step = WorkflowStep.AWAIT_DEVIATION_CONFIRM
+
+        lines = [
+            "📋 生成前请确认商务/技术偏离表将逐条写入的内容：",
+            "",
+            f"商务条款：{len(preview['business_items'])} 条",
+            f"技术条款：{len(preview['technical_items'])} 条",
+            "",
+            "确认无误请说「确认」或「继续」。",
+            "如需补充，可说「补充商务偏离：...」或「补充技术偏离：...」。",
+            "如来源页码不对，可直接说「K08_技术要求来源页是第23页」。",
+            "生成完成后，可在右侧主标文件中打开「商务/技术偏离表（deviation.md）」。",
+        ]
+        return {
+            "message": "\n".join(lines),
+            "deviation_preview": preview,
+        }
+
+    def _deviation_preview(self) -> dict[str, Any]:
+        confirmed = self.ctx.parsed_data.get("_confirmed_deviation_items")
+        pending = self.ctx.parsed_data.get("_pending_deviation_items")
+        if isinstance(confirmed, dict):
+            business = [str(v) for v in confirmed.get("business", []) if str(v).strip()]
+            technical = [str(v) for v in confirmed.get("technical", []) if str(v).strip()]
+        elif isinstance(pending, dict):
+            business = [str(v) for v in pending.get("business", []) if str(v).strip()]
+            technical = [str(v) for v in pending.get("technical", []) if str(v).strip()]
+        else:
+            business = self._business_deviation_items(self.ctx.parsed_data or {})
+            technical = self._technical_deviation_items(self.ctx.parsed_data or {})
+            for item, _page in k_field_items_with_pages(
+                (self.ctx.parsed_data or {}).get("K10_星标项")
+            ):
+                target = self._deviation_item_target(item)
+                if target == "business":
+                    self._append_unique(business, item)
+                elif target == "technical":
+                    self._append_unique(technical, item)
+        return {
+            "business_items": business,
+            "technical_items": technical,
+            "format_requirement": (
+                k_field_value((self.ctx.parsed_data or {}).get("K13_偏离表格式要求"))
+                or "按招标文件要求填写"
+            ),
+        }
+
+    def _confirm_deviation_items(self):
+        preview = self._deviation_preview()
+        self.ctx.parsed_data["_confirmed_deviation_items"] = {
+            "business": preview["business_items"],
+            "technical": preview["technical_items"],
+            "confirmed_at": datetime.utcnow().isoformat(),
+        }
+        self.ctx.parsed_data.pop("_pending_deviation_items", None)
+
+        session = get_session()
+        project = session.get(Project, self.ctx.project_id)
+        if project:
+            project.parsed_data = json.dumps(self.ctx.parsed_data, ensure_ascii=False)
+            session.commit()
+
+    def _apply_deviation_message(self, msg: str) -> bool:
+        text = (msg or "").strip()
+        preview = self._deviation_preview()
+        pending = self.ctx.parsed_data.setdefault("_pending_deviation_items", {})
+        if not isinstance(pending, dict):
+            pending = {}
+            self.ctx.parsed_data["_pending_deviation_items"] = pending
+
+        pending.setdefault("business", list(preview["business_items"]))
+        pending.setdefault("technical", list(preview["technical_items"]))
+
+        changed = False
+        for key, pattern in [
+            ("business", r"(?:(?:补充|新增|增加|添加)\s*)?(?:商务|商务偏离|商务条款)[：:\s]+(.+)"),
+            ("technical", r"(?:(?:补充|新增|增加|添加)\s*)?(?:技术|技术偏离|技术条款)[：:\s]+(.+)"),
+        ]:
+            m = re.search(pattern, text, re.S)
+            if not m:
+                continue
+            for item in self._deviation_items(m.group(1)):
+                self._append_unique(pending[key], item)
+                changed = True
+
+        if changed:
+            self.ctx.parsed_data.pop("_confirmed_deviation_items", None)
+            session = get_session()
+            project = session.get(Project, self.ctx.project_id)
+            if project:
+                project.parsed_data = json.dumps(self.ctx.parsed_data, ensure_ascii=False)
+                session.commit()
+        return changed
 
     def _start_generation(self) -> dict[str, Any]:
         self.step = WorkflowStep.AWAIT_DRAFT_CONFIRM
@@ -737,11 +873,25 @@ class Orchestrator:
                 "## 目录",
                 "",
             ])
+            chapter_numbers: dict[int, tuple[str, int]] = {}
+            volume_counters = {"commercial": 0, "technical": 0}
             for ch in chapters:
-                no = ch.get("no", "?")
-                title = ch.get("title", "")
-                volume = self._volume_label(ch.get("volume", "other"))
-                cover_lines.append(f"- [{volume}] 第{no}章 {title}")
+                cat = ch.get("category", "06_其他") or "06_其他"
+                volume = self._outline_volume(
+                    ch.get("volume")
+                    or self._infer_outline_volume(ch.get("title", ""), cat)
+                )
+                volume_counters[volume] += 1
+                chapter_numbers[id(ch)] = (volume, volume_counters[volume])
+
+            for volume_key in ("commercial", "technical"):
+                for ch in chapters:
+                    ch_volume, no = chapter_numbers.get(id(ch), ("commercial", 0))
+                    if ch_volume != volume_key:
+                        continue
+                    title = ch.get("title", "")
+                    volume = self._volume_label(volume_key)
+                    cover_lines.append(f"- [{volume}] 第{no}章 {title}")
             cover_lines.append("")
             (main_dir / "cover.md").write_text(
                 "\n".join(cover_lines), encoding="utf-8"
@@ -756,19 +906,19 @@ class Orchestrator:
             # 3) 各分类子目录 + 单章文件
             for ch in chapters:
                 cat = ch.get("category", "06_其他") or "06_其他"
-                volume = (
-                    ch.get("volume")
-                    or self._infer_outline_volume(ch.get("title", ""), cat)
+                volume, no_int = chapter_numbers.get(
+                    id(ch),
+                    (
+                        self._outline_volume(
+                            ch.get("volume")
+                            or self._infer_outline_volume(ch.get("title", ""), cat)
+                        ),
+                        0,
+                    ),
                 )
                 cat_dir = main_dir / volume / cat
                 cat_dir.mkdir(parents=True, exist_ok=True)
-                no = ch.get("no", 0)
                 title = ch.get("title", "未命名章节")
-                # 防御性转换：no 可能是非数字字符串（如 "?"）
-                try:
-                    no_int = int(no)
-                except (ValueError, TypeError):
-                    no_int = 0
                 fname = f"{no_int:02d}_{self._sanitize_filename(title)}.md"
                 (cat_dir / fname).write_text(
                     ch.get("content", "") or "", encoding="utf-8"
@@ -860,11 +1010,31 @@ class Orchestrator:
         project_name = k_field_value(parsed.get("K01_项目名称")) or "招标项目"
         tender_label = "主标" if tender_type == "main" else "陪标"
         format_req = k_field_value(parsed.get("K13_偏离表格式要求")) or "按招标文件要求填写"
-        business_reqs = self._deviation_items(parsed.get("K09_商务资质要求"))
-        tech_reqs = self._deviation_items(parsed.get("K08_技术要求"))
+        confirmed_deviation = parsed.get("_confirmed_deviation_items")
+        if isinstance(confirmed_deviation, dict):
+            business_reqs = [
+                str(v).strip()
+                for v in confirmed_deviation.get("business", [])
+                if str(v).strip()
+            ]
+            tech_reqs = [
+                str(v).strip()
+                for v in confirmed_deviation.get("technical", [])
+                if str(v).strip()
+            ]
+        else:
+            business_reqs = self._business_deviation_items(parsed)
+            tech_reqs = self._technical_deviation_items(parsed)
         star_items = [
             item for item, _page in k_field_items_with_pages(parsed.get("K10_星标项"))
         ]
+        if not isinstance(confirmed_deviation, dict):
+            for item in star_items:
+                target = self._deviation_item_target(item)
+                if target == "business" and item not in business_reqs:
+                    business_reqs.append(item)
+                elif target == "technical" and item not in tech_reqs:
+                    tech_reqs.append(item)
 
         lines = [
             f"# {project_name} — 商务/技术条款偏离表（{tender_label}）",
@@ -879,12 +1049,12 @@ class Orchestrator:
             "| --- | --- | --- | --- | --- |",
         ]
         if business_reqs:
-            for idx, item in enumerate(business_reqs[:12], 1):
+            for idx, item in enumerate(business_reqs, 1):
                 lines.append(
                     f"| {idx} | {self._table_cell(item)} | 完全响应 | 无偏离 | 按招标文件及商务资质材料响应 |"
                 )
         else:
-            lines.append("| 1 | 商务资质、授权、服务承诺等商务条款 | 完全响应 | 无偏离 | 以招标文件和投标文件商务章节为准 |")
+            lines.append("| - | 未解析到可逐条响应的商务条款 | 待补充 | 待确认 | 请在解析报告中补充 K09 或 qualification/commercial 的逐条原文要求后再生成偏离表 |")
 
         lines.extend([
             "",
@@ -893,17 +1063,13 @@ class Orchestrator:
             "| 序号 | 招标技术要求 | 投标响应 | 偏离情况 | 说明 |",
             "| --- | --- | --- | --- | --- |",
         ])
-        combined_tech = tech_reqs[:10]
-        for item in star_items:
-            if item not in combined_tech:
-                combined_tech.append(item)
-        if combined_tech:
-            for idx, item in enumerate(combined_tech[:15], 1):
+        if tech_reqs:
+            for idx, item in enumerate(tech_reqs, 1):
                 lines.append(
                     f"| {idx} | {self._table_cell(item)} | 完全响应 | 无偏离 | 技术方案章节已响应 |"
                 )
         else:
-            lines.append("| 1 | 医院信息化系统建设技术要求 | 完全响应 | 无偏离 | 以投标文件技术方案为准 |")
+            lines.append("| - | 未解析到可逐条响应的技术条款 | 待补充 | 待确认 | 请在解析报告中补充 K08 或 tech 的逐条原文要求后再生成偏离表 |")
 
         lines.extend([
             "",
@@ -939,7 +1105,107 @@ class Orchestrator:
         return items or [text.strip()]
 
     @staticmethod
-    def _table_cell(value: str, max_len: int = 120) -> str:
+    def _business_deviation_items(parsed: dict[str, Any]) -> list[str]:
+        items: list[str] = []
+        Orchestrator._extend_unique(items, Orchestrator._deviation_items(parsed.get("K09_商务资质要求")))
+
+        qualification = parsed.get("qualification") or {}
+        reqs = qualification if isinstance(qualification, list) else qualification.get("requirements", [])
+        if isinstance(reqs, list):
+            for req in reqs:
+                text = Orchestrator._requirement_text(req)
+                if text:
+                    Orchestrator._append_unique(items, text)
+
+        commercial = parsed.get("commercial") or {}
+        if isinstance(commercial, dict):
+            labels = {
+                "payment": "付款方式",
+                "delivery_cycle_days": "交付周期",
+                "warranty": "质保/维保期",
+                "penalty_clauses": "违约责任",
+                "contract_type": "合同类型",
+            }
+            for key, label in labels.items():
+                value = commercial.get(key)
+                if value not in (None, "", [], {}):
+                    Orchestrator._append_unique(items, f"{label}：{value}")
+
+        return items
+
+    @staticmethod
+    def _technical_deviation_items(parsed: dict[str, Any]) -> list[str]:
+        items: list[str] = []
+        Orchestrator._extend_unique(items, Orchestrator._deviation_items(parsed.get("K08_技术要求")))
+
+        tech = parsed.get("tech") or {}
+        if not isinstance(tech, dict):
+            return items
+
+        func_reqs = tech.get("functional_requirements") or []
+        if isinstance(func_reqs, list):
+            for req in func_reqs:
+                text = Orchestrator._requirement_text(req)
+                if text:
+                    Orchestrator._append_unique(items, text)
+
+        non_functional = tech.get("non_functional_requirements") or {}
+        if isinstance(non_functional, dict):
+            labels = {
+                "performance": "性能要求",
+                "availability": "可用性要求",
+                "scalability": "扩展性要求",
+            }
+            for key, label in labels.items():
+                value = non_functional.get(key)
+                if value not in (None, "", [], {}):
+                    Orchestrator._append_unique(items, f"{label}：{value}")
+
+        security = tech.get("security_requirements") or {}
+        if isinstance(security, dict):
+            level = security.get("level")
+            if level:
+                Orchestrator._append_unique(items, f"安全等级要求：{level}")
+            Orchestrator._extend_unique(items, Orchestrator._deviation_items(security.get("items")))
+
+        Orchestrator._extend_unique(items, Orchestrator._deviation_items(tech.get("deliverables")))
+        return items
+
+    @staticmethod
+    def _requirement_text(req: Any) -> str:
+        if not isinstance(req, dict):
+            return str(req).strip()
+        parts = []
+        for key in ("id", "type", "module", "name", "requirement", "condition", "description", "criteria", "proof_type"):
+            value = req.get(key)
+            if value not in (None, "", [], {}):
+                parts.append(str(value).strip())
+        if req.get("is_mandatory") is True:
+            parts.append("必须满足")
+        return "；".join(part for part in parts if part)
+
+    @staticmethod
+    def _deviation_item_target(item: str) -> str:
+        text = str(item or "")
+        if any(kw in text for kw in ["资质", "资格", "授权", "承诺", "商务", "报价", "合同", "付款", "质保", "保证金"]):
+            return "business"
+        if any(kw in text for kw in ["技术", "系统", "功能", "接口", "安全", "性能", "数据", "实施", "运维", "培训", "服务"]):
+            return "technical"
+        return ""
+
+    @staticmethod
+    def _extend_unique(target: list[str], values: list[str]):
+        for value in values:
+            Orchestrator._append_unique(target, value)
+
+    @staticmethod
+    def _append_unique(target: list[str], value: str):
+        text = str(value or "").strip()
+        if text and text not in target and text != "未找到":
+            target.append(text)
+
+    @staticmethod
+    def _table_cell(value: str, max_len: int = 1000) -> str:
         text = re.sub(r"\s+", " ", str(value)).strip()
         text = text.replace("|", "\\|")
         if len(text) > max_len:
@@ -960,11 +1226,13 @@ class Orchestrator:
     @staticmethod
     def _volume_label(volume: str) -> str:
         return {
-            "commercial": "商务标",
-            "technical": "技术标",
-            "price": "报价标",
-            "other": "其他",
-        }.get(volume or "other", "其他")
+            "commercial": "商务文件",
+            "technical": "技术文件",
+        }.get(volume or "commercial", "商务文件")
+
+    @staticmethod
+    def _outline_volume(volume: str) -> str:
+        return "technical" if volume == "technical" else "commercial"
 
     # ================================================================
     # 辅助方法
@@ -992,27 +1260,38 @@ class Orchestrator:
         if not outline:
             return f"{intro}\n（无章节）"
         lines = [intro]
-        show = outline[:10]
-        for ch in show:
-            no = ch.get("no", "?")
-            title = ch.get("title", "")
-            cat = ch.get("category", "")
-            lines.append(f"\n  第{no}章 {title}（{cat}）")
-            for sub in ch.get("subsections") or []:
-                lines.append(f"    · {sub.get('title', '')}")
+        grouped = {"commercial": [], "technical": []}
+        for ch in outline:
+            volume = self._outline_volume(ch.get("volume", "commercial"))
+            grouped[volume].append(ch)
+
+        shown = 0
+        for volume, chapters in grouped.items():
+            if not chapters or shown >= 10:
+                continue
+            lines.append(f"\n  【{self._volume_label(volume)}】")
+            for idx, ch in enumerate(chapters, 1):
+                if shown >= 10:
+                    break
+                title = ch.get("title", "")
+                cat = ch.get("category", "")
+                lines.append(f"  第{idx}章 {title}（{cat}）")
+                for sub in ch.get("subsections") or []:
+                    lines.append(f"    · {sub.get('title', '')}")
+                shown += 1
         if len(outline) > 10:
             lines.append(f"\n  … 还有 {len(outline) - 10} 章未显示")
         lines.append(
             "\n说「继续」进入材料匹配。"
-            "\n修改指令：删除第N章 / 加一章 [标题] / 改 [旧] 为 [新] / 重排 / 换"
+            "\n修改指令：删除「章节标题」 / 删除技术文件第1章 / 加一章 [标题] / 重排 / 换"
         )
         return "\n".join(lines)
 
     def _outline_help_text(self) -> str:
         return ("可以这样告诉我修改：\n"
-                "• 删除第3章 / 把第3章删了\n"
+                "• 删除「技术方案」 / 删除技术文件第1章\n"
                 "• 加一章「数据迁移方案」\n"
-                "• 把第3章改名为「实施保障」\n"
+                "• 把「技术方案」改名为「实施保障」\n"
                 "• 技术方案那章加一个小节「数据迁移」\n"
                 "• 重新生成提纲（再想想）\n"
                 "或者直接说「继续」进入材料匹配")
@@ -1136,17 +1415,15 @@ class Orchestrator:
     @staticmethod
     def _infer_outline_volume(title: str, category: str) -> str:
         text = f"{title or ''} {category or ''}"
-        if any(kw in text for kw in ["报价", "价格", "开标一览", "分项报价", "投标报价"]):
-            return "price"
         if category in ("03_技术方案", "04_实施方案"):
             return "technical"
         if category in ("01_公司资质", "02_业绩案例", "05_商务文件"):
             return "commercial"
         if any(kw in text for kw in ["技术", "实施", "运维", "售后", "培训", "演示"]):
             return "technical"
-        if any(kw in text for kw in ["商务", "资质", "业绩", "投标函", "承诺", "合同"]):
+        if any(kw in text for kw in ["商务", "资质", "业绩", "投标函", "承诺", "合同", "报价", "价格", "开标一览", "分项报价", "投标报价"]):
             return "commercial"
-        return "other"
+        return "commercial"
 
     # ================================================================
     # 会话持久化
