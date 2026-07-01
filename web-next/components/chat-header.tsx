@@ -6,6 +6,7 @@ import {
   Pencil,
   MessageSquare,
   BarChart3,
+  Calculator,
   Settings,
   Sun,
   Moon,
@@ -49,6 +50,7 @@ export function ChatHeader({
   view,
   onViewChange,
   canShowReport,
+  onOpenPriceCalculator,
   onClearHistory,
 }: {
   project: ProjectDetail;
@@ -56,6 +58,7 @@ export function ChatHeader({
   view: "chat" | "report";
   onViewChange: (v: "chat" | "report") => void;
   canShowReport: boolean;
+  onOpenPriceCalculator: () => void;
   onClearHistory: () => void;
 }) {
   const [uploading, setUploading] = useState(false);
@@ -132,19 +135,29 @@ export function ChatHeader({
 
         {/* View tabs (pill style) */}
         {canShowReport && (
-          <div className="flex p-1 bg-[var(--color-paper-warm)] rounded-xl" role="tablist">
-            <TabBtn
-              active={view === "chat"}
-              onClick={() => onViewChange("chat")}
-              icon={<MessageSquare className="w-3.5 h-3.5" />}
-              label="对话"
-            />
-            <TabBtn
-              active={view === "report"}
-              onClick={() => onViewChange("report")}
-              icon={<BarChart3 className="w-3.5 h-3.5" />}
-              label="报告"
-            />
+          <div className="flex items-center gap-1.5">
+            <div className="flex p-1 bg-[var(--color-paper-warm)] rounded-xl" role="tablist">
+              <TabBtn
+                active={view === "chat"}
+                onClick={() => onViewChange("chat")}
+                icon={<MessageSquare className="w-3.5 h-3.5" />}
+                label="对话"
+              />
+              <TabBtn
+                active={view === "report"}
+                onClick={() => onViewChange("report")}
+                icon={<BarChart3 className="w-3.5 h-3.5" />}
+                label="报告"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={onOpenPriceCalculator}
+              className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px] font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors"
+            >
+              <Calculator className="w-3.5 h-3.5 text-[var(--color-primary)]" />
+              价格计算器
+            </button>
           </div>
         )}
 

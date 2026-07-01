@@ -1009,7 +1009,6 @@ class Orchestrator:
         """基于 K 字段生成商务/技术条款偏离表 Markdown。"""
         project_name = k_field_value(parsed.get("K01_项目名称")) or "招标项目"
         tender_label = "主标" if tender_type == "main" else "陪标"
-        format_req = k_field_value(parsed.get("K13_偏离表格式要求")) or "按招标文件要求填写"
         confirmed_deviation = parsed.get("_confirmed_deviation_items")
         if isinstance(confirmed_deviation, dict):
             business_reqs = [
@@ -1038,10 +1037,6 @@ class Orchestrator:
 
         lines = [
             f"# {project_name} — 商务/技术条款偏离表（{tender_label}）",
-            "",
-            "## 偏离表格式要求",
-            "",
-            str(format_req),
             "",
             "## 商务条款偏离表",
             "",

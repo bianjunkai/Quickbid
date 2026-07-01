@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { AlertOctagon, ChevronDown, ClipboardCheck, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertOctagon, ChevronDown, ClipboardCheck, Edit3, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -19,6 +20,7 @@ type Props = {
 
 export function DeviationToolResult({ state, input, output, errorText }: Props) {
   const [expanded, setExpanded] = useState(true);
+  const router = useRouter();
 
   if (errorText) {
     return (
@@ -73,18 +75,31 @@ export function DeviationToolResult({ state, input, output, errorText }: Props) 
         <span className="text-[11px] text-[var(--color-ink-mute)] font-mono tabular-nums">
           · 商务 {business.length} 条 · 技术 {technical.length} 条
         </span>
+        {input?.projectId && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              router.push(`/projects/${input.projectId}?doc=deviation`);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                router.push(`/projects/${input.projectId}?doc=deviation`);
+              }
+            }}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)]"
+          >
+            <Edit3 className="w-3 h-3" />
+            Markdown 编辑
+          </span>
+        )}
       </button>
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4">
-          {output.format_requirement && (
-            <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-paper-warm)] px-3 py-2">
-              <div className="text-[11px] font-semibold text-[var(--color-ink-mute)] mb-1">格式要求</div>
-              <div className="text-[12px] text-[var(--color-ink)] leading-relaxed">
-                {output.format_requirement}
-              </div>
-            </div>
-          )}
           <DeviationList title="商务条款偏离表" items={business} emptyText="未解析到可逐条响应的商务条款" />
           <DeviationList title="技术条款偏离表" items={technical} emptyText="未解析到可逐条响应的技术条款" />
           {output.action_hint && (

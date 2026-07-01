@@ -10,16 +10,28 @@ import {
   Plus,
   ExternalLink,
   Loader2,
+  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ProjectDetail, TenderSummary } from "@/lib/api";
+import type { Material, ProjectDetail, TenderSummary } from "@/lib/api";
 import {
+  listMaterials,
   listTenderFiles,
   type TenderFileEntry,
   type TenderFileTree,
   type TenderFolder,
+  uploadProjectMaterial,
 } from "@/lib/api";
 import { useRouter } from "next/navigation";
+
+const MATERIAL_CATEGORIES = [
+  { key: "01_公司资质", label: "公司资质" },
+  { key: "02_业绩案例", label: "业绩案例" },
+  { key: "03_技术方案", label: "技术方案" },
+  { key: "04_实施方案", label: "实施方案" },
+  { key: "05_商务文件", label: "商务文件" },
+  { key: "06_其他", label: "其他" },
+];
 
 export function FileSidebar({
   project,
@@ -33,6 +45,11 @@ export function FileSidebar({
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const [fileTrees, setFileTrees] = useState<Record<number, TenderFileTree>>({});
   const [loadingTree, setLoadingTree] = useState(false);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [materialsLoading, setMaterialsLoading] = useState(false);
+  const [materialCategory, setMaterialCategory] = useState("03_技术方案");
+  const [uploadingMaterial, setUploadingMaterial] = useState(false);
+  const [materialError, setMaterialError] = useState<string | null>(null);
   const activeTenderId = project.active_main_tender_id ?? project.tender_id;
   const tenders = project.tenders || [];
   const mainTender =
@@ -47,6 +64,17 @@ export function FileSidebar({
     ])
   );
   const tenderIdsKey = tenderIdsToLoad.join(",");
+  const selectedMaterialCategory = MATERIAL_CATEGORIES.find(
+    (cat) => cat.key === materialCategory
+  );
+
+  const refreshMaterials = () => {
+    setMaterialsLoading(true);
+    listMaterials({ category: materialCategory })
+      .then(setMaterials)
+      .catch((e) => setMaterialError(e.message))
+      .finally(() => setMaterialsLoading(false));
+  };
 
   // 动态拉取文件树（主标 + 已落盘陪标）
   useEffect(() => {
@@ -81,6 +109,26 @@ export function FileSidebar({
       cancelled = true;
     };
   }, [project.id, project.status, tenderIdsKey]);
+
+  useEffect(() => {
+    refreshMaterials();
+    const onUpdated = () => refreshMaterials();
+    window.addEventListener("quickbid:materials-updated", onUpdated);
+    return () => window.removeEventListener("quickbid:materials-updated", onUpdated);
+  }, [materialCategory]);
+
+  const handleMaterialUpload = async (file: File) => {
+    setUploadingMaterial(true);
+    setMaterialError(null);
+    try {
+      await uploadProjectMaterial(project.id, { file, category: materialCategory });
+      refreshMaterials();
+    } catch (e: any) {
+      setMaterialError(e.message || "材料上传失败");
+    } finally {
+      setUploadingMaterial(false);
+    }
+  };
 
   const toggleFolder = (key: string) => {
     setOpenFolders((prev) => {
@@ -181,6 +229,74 @@ export function FileSidebar({
                   暂无文件
                 </div>
               )}
+            </div>
+
+            {/* Project material library */}
+            <div>
+              <div className="section-label">
+                <span>主标材料库</span>
+                <span className="count">{String(materials.length).padStart(2, "0")}</span>
+              </div>
+              <div className="card-soft p-3 space-y-3">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={materialCategory}
+                    onChange={(e) => setMaterialCategory(e.target.value)}
+                    className="min-w-0 flex-1 h-8 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-2 text-[11px] text-[var(--color-ink-soft)]"
+                  >
+                    {MATERIAL_CATEGORIES.map((cat) => (
+                      <option key={cat.key} value={cat.key}>{cat.label}</option>
+                    ))}
+                  </select>
+                  <label className="h-8 px-2.5 rounded-lg border border-dashed border-[var(--color-border)] text-[11px] font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-primary-deep)] hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-bg)] flex items-center gap-1.5 cursor-pointer transition-colors">
+                    {uploadingMaterial ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                    添加
+                    <input
+                      type="file"
+                      accept=".md,.txt,.docx,.pdf"
+                      className="hidden"
+                      disabled={uploadingMaterial}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleMaterialUpload(file);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+                {materialError && (
+                  <div className="text-[11px] text-[var(--color-danger)] leading-relaxed">
+                    {materialError}
+                  </div>
+                )}
+                {materialsLoading ? (
+                  <div className="flex items-center gap-2 text-[11px] text-[var(--color-ink-mute)]">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    加载材料…
+                  </div>
+                ) : materials.length === 0 ? (
+                  <div className="text-[11px] text-[var(--color-ink-mute)]">
+                    {selectedMaterialCategory?.label ?? "当前分类"}暂无材料
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                    {materials.slice(0, 12).map((material) => (
+                      <div
+                        key={`${material.category}-${material.title}-${material.id}`}
+                        className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-2.5 py-2"
+                      >
+                        <div className="text-[11.5px] font-medium text-[var(--color-ink)] truncate" title={material.title}>
+                          {material.title}
+                        </div>
+                        <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-[var(--color-ink-mute)]">
+                          <span className="truncate">{prettyCategory(material.category)}</span>
+                          <span className="font-mono tabular-nums">{material.char_count || 0} 字</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Sub-bids */}

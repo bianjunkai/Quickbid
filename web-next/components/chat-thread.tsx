@@ -16,6 +16,7 @@ import { MessageList } from "./message-list";
 import { Composer } from "./composer";
 import { FileSidebar } from "./file-sidebar";
 import { ParserReport } from "./tools/parser-report";
+import { PriceCalculatorDialog } from "./price-calculator-dialog";
 
 type ViewMode = "chat" | "report";
 
@@ -103,6 +104,7 @@ function ChatView({
 }) {
   const router = useRouter();
   const [view, setView] = useState<ViewMode>("chat");
+  const [priceOpen, setPriceOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const projectRef = useRef<ProjectDetail>(project);
 
@@ -177,6 +179,7 @@ function ChatView({
         view={view}
         onViewChange={setView}
         canShowReport={hasReport}
+        onOpenPriceCalculator={() => setPriceOpen(true)}
         onClearHistory={onClearHistory}
       />
 
@@ -219,6 +222,11 @@ function ChatView({
           onOpenReport={hasReport ? () => setView("report") : undefined}
         />
       </div>
+      <PriceCalculatorDialog
+        projectId={projectId}
+        open={priceOpen}
+        onClose={() => setPriceOpen(false)}
+      />
     </div>
   );
 }

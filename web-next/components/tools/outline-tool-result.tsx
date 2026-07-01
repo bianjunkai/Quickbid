@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, AlertOctagon, Loader2, ListTree, Pencil, AlertTriangle, XCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronDown, AlertOctagon, Loader2, ListTree, Pencil, AlertTriangle, XCircle, Edit3 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { firstUsefulScoringRefLabel, normalizeMaybeScoringTitle } from "./scoring-labels";
 
 const CATEGORY_LABEL: Record<string, string> = {
   "01_公司资质": "公司资质",
@@ -76,6 +78,7 @@ export function OutlineToolResult({
   errorText?: string;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const router = useRouter();
 
   if (errorText) {
     return (
@@ -156,6 +159,27 @@ export function OutlineToolResult({
                 · 评分覆盖 {Math.round(validation.stats.scoring_coverage * 100)}%
               </span>
             )}
+            {input?.projectId && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  router.push(`/projects/${input.projectId}?doc=outline`);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    router.push(`/projects/${input.projectId}?doc=outline`);
+                  }
+                }}
+                className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)]"
+              >
+                <Edit3 className="w-3 h-3" />
+                Markdown 编辑
+              </span>
+            )}
           </button>
 
           {expanded && (
@@ -217,7 +241,7 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
   const subs = chapter.subsections ?? [];
   const sourceLabel = chapter.source ? SOURCE_LABEL[chapter.source] : null;
   const requirementRef = firstRefLabel(chapter.requirement_refs);
-  const scoringRef = firstRefLabel(chapter.scoring_refs);
+  const scoringRef = firstUsefulScoringRefLabel(chapter);
 
   return (
     <li className="px-4 py-3 hover:bg-[var(--color-paper-warm)] transition-colors">
@@ -228,7 +252,7 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[13.5px] font-semibold text-[var(--color-ink)] leading-snug">
-              {chapter.title || `第 ${no} 章`}
+              {normalizeMaybeScoringTitle(chapter.title || `第 ${no} 章`)}
             </span>
             {catLabel && (
               <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)] text-[10px] text-[var(--color-ink-soft)] font-medium">
@@ -262,7 +286,7 @@ function ChapterRow({ chapter, index }: { chapter: Chapter; index: number }) {
                   key={s.id ?? j}
                   className="text-[12px] text-[var(--color-ink-mute)] leading-relaxed pl-2"
                 >
-                  {s.title}
+                  {normalizeMaybeScoringTitle(s.title || "")}
                 </li>
               ))}
             </ul>
@@ -277,8 +301,8 @@ function firstRefLabel(refs?: EvidenceRef[]) {
   const ref = refs?.find((r) => r.page || r.label || r.quote);
   if (!ref) return "";
   if (ref.page) return `P.${ref.page}`;
-  if (ref.label) return ref.label.slice(0, 24);
-  return ref.quote?.slice(0, 24) || "来源未定位";
+  const text = ref.label || ref.quote || "";
+  return text.slice(0, 48) || "来源未定位";
 }
 
 function ValidationCard({ validation }: { validation: ValidationResult }) {

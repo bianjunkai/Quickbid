@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AlertOctagon,
   Check,
@@ -11,6 +12,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { normalizeMaybeScoringTitle } from "./scoring-labels";
 
 // ---- 类型 ----
 type GeneratedChapter = {
@@ -20,7 +22,9 @@ type GeneratedChapter = {
   title?: string;
   volume?: string;
   category?: string;
+  subsections?: Array<{ id?: string; title?: string }>;
   content?: string;
+  file_path?: string | null;
   material_title?: string;
   match_score?: string;
   error?: string;
@@ -146,6 +150,7 @@ export function GeneratorToolResult({
           onDownload={() =>
             downloadAllChapters(chapters, projectId ?? 0, draftPath)
           }
+          draftPath={draftPath}
         />
         {chapters.length > 0 && (
           <FileCategorizationPreview chapters={chapters} outline={outline} />
@@ -174,12 +179,14 @@ function Header({
   placeholderCount,
   onCopyAll,
   onDownload,
+  draftPath,
 }: {
   chaptersCount: number;
   errorsCount: number;
   placeholderCount: number;
   onCopyAll: () => void;
   onDownload: () => void;
+  draftPath?: string;
 }) {
   const [copyOk, setCopyOk] = useState(false);
   const handleCopy = async () => {
@@ -188,38 +195,45 @@ function Header({
     setTimeout(() => setCopyOk(false), 1500);
   };
   return (
-    <div className="px-4 py-3 border-b border-[var(--color-border)] flex items-center gap-3 flex-wrap">
-      <FileText className="w-3.5 h-3.5 text-[var(--color-primary)]" />
-      <span className="text-[13px] font-semibold text-[var(--color-ink)]">
-        主标生成
-      </span>
-      <span className="text-[11px] text-[var(--color-ink-mute)] font-mono tabular-nums">
-        · {chaptersCount} 章
-        {errorsCount > 0 && ` · ${errorsCount} 失败`}
-        {placeholderCount > 0 && ` · ${placeholderCount} 占位`}
-      </span>
-      <div className="ml-auto flex items-center gap-1.5">
-        <button
-          onClick={handleCopy}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors"
-          aria-label="复制全部 Markdown"
-        >
-          {copyOk ? (
-            <Check className="w-3 h-3 text-[var(--color-success)]" />
-          ) : (
-            <Copy className="w-3 h-3" />
-          )}
-          {copyOk ? "已复制" : "复制"}
-        </button>
-        <button
-          onClick={onDownload}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors"
-          aria-label="下载 draft.md"
-        >
-          <Download className="w-3 h-3" />
-          下载
-        </button>
+    <div className="px-4 py-3 border-b border-[var(--color-border)]">
+      <div className="flex items-center gap-3 flex-wrap">
+        <FileText className="w-3.5 h-3.5 text-[var(--color-primary)]" />
+        <span className="text-[13px] font-semibold text-[var(--color-ink)]">
+          主标生成
+        </span>
+        <span className="text-[11px] text-[var(--color-ink-mute)] font-mono tabular-nums">
+          已生成 {chaptersCount} 个章节文件
+          {errorsCount > 0 && ` · ${errorsCount} 个章节生成失败`}
+          {placeholderCount > 0 && ` · ${placeholderCount} 个章节含待补充内容`}
+        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors"
+            aria-label="复制全部 Markdown"
+          >
+            {copyOk ? (
+              <Check className="w-3 h-3 text-[var(--color-success)]" />
+            ) : (
+              <Copy className="w-3 h-3" />
+            )}
+            {copyOk ? "已复制" : "复制全部"}
+          </button>
+          <button
+            onClick={onDownload}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors"
+            aria-label="下载 draft.md"
+          >
+            <Download className="w-3 h-3" />
+            下载 Markdown
+          </button>
+        </div>
       </div>
+      {draftPath && (
+        <div className="mt-2 rounded-lg bg-[var(--color-surface-sunk)] border border-[var(--color-border)] px-3 py-2 text-[11px] text-[var(--color-ink-mute)] font-mono break-all">
+          主标汇总文件：{draftPath}
+        </div>
+      )}
     </div>
   );
 }
@@ -247,36 +261,62 @@ function FileCategorizationPreview({
               · {g.category}
             </span>
             <span className="ml-auto text-[10px] text-[var(--color-ink-mute)] font-mono tabular-nums">
-              {g.chapters.length} 文件
+              {g.chapters.length} 个章节文件
             </span>
           </div>
-          <ol className="ml-5 space-y-0.5">
+          <ol className="ml-5 space-y-2">
             {g.chapters.map((ch, i) => (
               <li
                 key={ch.chapter_id ?? i}
-                className="text-[12px] text-[var(--color-ink-soft)] leading-relaxed flex items-center gap-1.5"
+                className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] px-3 py-2 text-[12px] text-[var(--color-ink-soft)] leading-relaxed"
               >
-                <span className="text-[var(--color-ink-mute)] font-mono tabular-nums w-5">
-                  {String(displayChapterNo(ch, i)).padStart(2, "0")}
-                </span>
-                <span className="truncate" title={ch.title}>
-                  {ch.title || "未命名章节"}
-                </span>
-                {ch.error && (
-                  <span className="shrink-0 text-[10px] text-[var(--color-danger)] font-medium">
-                    ⚠️
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 text-[var(--color-ink-mute)] font-mono tabular-nums w-7 shrink-0">
+                    {String(displayChapterNo(ch, i)).padStart(2, "0")}
                   </span>
-                )}
-                {!ch.error && (ch.content || "").includes("[待补充") && (
-                  <span className="shrink-0 text-[10px] text-[var(--color-primary-deep)] font-medium">
-                    占位
-                  </span>
-                )}
-                {ch.material_title && (
-                  <span className="shrink-0 text-[10px] text-[var(--color-ink-mute)] max-w-[90px] truncate" title={ch.material_title}>
-                    {ch.material_title}
-                  </span>
-                )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold text-[var(--color-ink)]">
+                        {normalizeMaybeScoringTitle(ch.title || "未命名章节")}
+                      </span>
+                      <InfoPill>卷别：{volumeLabel(ch.volume)}</InfoPill>
+                      <InfoPill>卷内序号：第 {displayChapterNo(ch, i)} 章</InfoPill>
+                      <InfoPill>材料分类：{prettyCategory(ch.category || "06_其他")}</InfoPill>
+                      {ch.chapter_id && <InfoPill>大纲节点：{ch.chapter_id}</InfoPill>}
+                      {ch.match_score && <InfoPill>材料匹配质量：{ch.match_score}</InfoPill>}
+                      {chapterState(ch) && (
+                        <span className={cn(
+                          "inline-flex rounded-md px-1.5 py-0.5 text-[10.5px] font-medium",
+                          ch.error
+                            ? "bg-[var(--color-danger-bg)] text-[var(--color-danger)]"
+                            : "bg-[var(--color-primary-bg)] text-[var(--color-primary-deep)]"
+                        )}>
+                          {chapterState(ch)}
+                        </span>
+                      )}
+                    </div>
+                    {ch.material_title && (
+                      <div className="mt-1 text-[11.5px] text-[var(--color-ink-soft)]">
+                        已匹配材料名称：{ch.material_title}
+                      </div>
+                    )}
+                    {ch.file_path && (
+                      <div className="mt-1 text-[11px] text-[var(--color-ink-mute)] font-mono break-all">
+                        已匹配材料路径：{ch.file_path}
+                      </div>
+                    )}
+                    {ch.subsections && ch.subsections.length > 0 && (
+                      <div className="mt-1 text-[11.5px] text-[var(--color-ink-mute)]">
+                        章节小节：{ch.subsections.map((s) => normalizeMaybeScoringTitle(s.title || "")).filter(Boolean).join(" / ")}
+                      </div>
+                    )}
+                    {ch.error && (
+                      <div className="mt-1 text-[11.5px] text-[var(--color-danger)] break-words">
+                        生成错误：{ch.error}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </li>
             ))}
           </ol>
@@ -333,6 +373,24 @@ function prettyCategory(cat: string): string {
   // "01_公司资质" -> "公司资质"
   const idx = cat.indexOf("_");
   return idx >= 0 ? cat.slice(idx + 1) : cat;
+}
+
+function volumeLabel(volume?: string): string {
+  return volume === "technical" ? "技术文件" : "商务文件";
+}
+
+function InfoPill({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[10.5px] text-[var(--color-ink-mute)]">
+      {children}
+    </span>
+  );
+}
+
+function chapterState(chapter: GeneratedChapter): string {
+  if (chapter.error) return "生成失败";
+  if ((chapter.content || "").includes("[待补充")) return "含待补充占位";
+  return "";
 }
 
 function fullDraftMarkdown(chapters: GeneratedChapter[]): string {

@@ -46,6 +46,13 @@ export interface Material {
   version?: number;
 }
 
+export interface MaterialOption {
+  title: string;
+  category: string;
+  file_path: string;
+  char_count?: number;
+}
+
 // AI SDK UIMessage 简化类型（用于持久化往返）
 export interface UIMessageData {
   id: string;
@@ -140,6 +147,34 @@ export const listMaterials = (params?: { category?: string; keyword?: string }) 
   return request<Material[]>(`/api/materials${qs ? `?${qs}` : ""}`);
 };
 
+export const listMaterialOptions = (params?: { category?: string; keyword?: string }) => {
+  const search = new URLSearchParams();
+  if (params?.category) search.set("category", params.category);
+  if (params?.keyword) search.set("keyword", params.keyword);
+  const qs = search.toString();
+  return request<MaterialOption[]>(`/api/materials/options${qs ? `?${qs}` : ""}`);
+};
+
+export const readMaterialFile = (filePath: string) =>
+  request<{ title: string; file_path: string; content: string }>(
+    `/api/materials/read?file_path=${encodeURIComponent(filePath)}`
+  );
+
+export const updateMatchedChapter = (
+  projectId: number,
+  data: {
+    chapter_id: string;
+    file_path?: string | null;
+    material_title?: string;
+    match_score?: string;
+    reason?: string;
+  }
+) =>
+  request<{ message: string; chapter: any }>(`/api/projects/${projectId}/match/chapter`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
 export const createMaterial = (data: {
   title: string;
   category: string;
@@ -151,6 +186,59 @@ export const createMaterial = (data: {
   request<{ id: number; title: string; message: string }>("/api/materials", {
     method: "POST",
     body: JSON.stringify(data),
+  });
+
+export const uploadProjectMaterial = (
+  projectId: number,
+  data: { file: File; category: string; chapter?: string }
+) => {
+  const form = new FormData();
+  form.append("file", data.file);
+  form.append("category", data.category);
+  if (data.chapter) form.append("chapter", data.chapter);
+  return fetch(apiPath(`/api/projects/${projectId}/materials/upload`), {
+    method: "POST",
+    body: form,
+  }).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new ApiError(res.status, err.detail || "上传材料失败");
+    }
+    return res.json() as Promise<{
+      id: number;
+      title: string;
+      category: string;
+      file_path: string;
+      char_count: number;
+      message: string;
+    }>;
+  });
+};
+
+export async function readProjectMarkdown(
+  projectId: number,
+  type: "outline" | "deviation"
+): Promise<string> {
+  const res = await fetch(apiPath(`/api/projects/${projectId}/${type}/markdown`));
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const data = await res.json();
+      if (data?.detail) msg = String(data.detail);
+    } catch { /* ignore */ }
+    throw new ApiError(res.status, msg);
+  }
+  return res.text();
+}
+
+export const saveProjectMarkdown = (
+  projectId: number,
+  type: "outline" | "deviation",
+  content: string
+) =>
+  request<{ message: string }>(`/api/projects/${projectId}/${type}/markdown`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
   });
 
 // ---- 标书文件树 / 单文件读取（右侧 FileSidebar + 全屏查看器）----
@@ -204,6 +292,48 @@ export async function readTenderFile(
   }
   return res.text();
 }
+
+export const saveTenderFile = (
+  projectId: number,
+  tenderId: number,
+  filePath: string,
+  content: string
+) =>
+  request<{ message: string; path: string; size: number }>(
+    `/api/projects/${projectId}/tenders/${tenderId}/files/${filePath}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    }
+  );
+
+export const calculatePrice = (
+  projectId: number,
+  data: {
+    lowest_price: number;
+    main_price: number;
+    competitor_price: number;
+    low_price_ratio?: number;
+    highest_limit?: number;
+    price_score_max?: number;
+  }
+) =>
+  request<any>(`/api/projects/${projectId}/price-calculator`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const getPriceCalculatorDefaults = (projectId: number) =>
+  request<{
+    ok: boolean;
+    highest_limit?: number | null;
+    highest_limit_display: string;
+    low_price_ratio?: number | null;
+    low_price_ratio_display: string;
+    price_score_max?: number | null;
+    price_score_max_display: string;
+    missing: Array<{ field?: string; label?: string }>;
+  }>(`/api/projects/${projectId}/price-calculator/defaults`);
 
 export const exportTender = (
   tenderId: number,

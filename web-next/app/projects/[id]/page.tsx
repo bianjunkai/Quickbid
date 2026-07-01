@@ -11,12 +11,13 @@ export default function ProjectChatPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ file?: string; tender?: string }>;
+  searchParams: Promise<{ file?: string; tender?: string; doc?: string }>;
 }) {
   const { id } = use(params);
   const search = use(searchParams);
   const projectId = Number(id);
   const filePath = search.file;
+  const docType = search.doc === "outline" || search.doc === "deviation" ? search.doc : null;
   const tenderParam = search.tender ? Number(search.tender) : null;
 
   if (!Number.isFinite(projectId) || projectId <= 0) {
@@ -33,11 +34,19 @@ export default function ProjectChatPage({
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
-      {filePath ? (
+      {docType ? (
+        <MarkdownViewerWrapper
+          projectId={projectId}
+          tenderParam={null}
+          filePath={undefined}
+          documentType={docType}
+        />
+      ) : filePath ? (
         <MarkdownViewerWrapper
           projectId={projectId}
           tenderParam={tenderParam}
           filePath={filePath}
+          documentType="file"
         />
       ) : (
         <ChatThread projectId={projectId} />
@@ -50,15 +59,21 @@ function MarkdownViewerWrapper({
   projectId,
   tenderParam,
   filePath,
+  documentType = "file",
 }: {
   projectId: number;
   tenderParam: number | null;
-  filePath: string;
+  filePath?: string;
+  documentType?: "file" | "outline" | "deviation";
 }) {
   const router = useRouter();
   const [tenderId, setTenderId] = useState<number | null>(null);
 
   useEffect(() => {
+    if (documentType !== "file") {
+      setTenderId(0);
+      return;
+    }
     if (tenderParam && Number.isFinite(tenderParam)) {
       setTenderId(tenderParam);
       return;
@@ -68,13 +83,13 @@ function MarkdownViewerWrapper({
       .then(res => res.json())
       .then(data => setTenderId(data.active_main_tender_id || data.tender_id || null))
       .catch(console.error);
-  }, [projectId, tenderParam]);
+  }, [projectId, tenderParam, documentType]);
 
   const handleClose = () => {
     router.replace(`/projects/${projectId}`, { scroll: false });
   };
 
-  if (!tenderId) {
+  if (documentType === "file" && !tenderId) {
     return (
       <main className="flex-1 flex items-center justify-center bg-[var(--color-paper)]">
         <div className="text-center">
@@ -90,8 +105,9 @@ function MarkdownViewerWrapper({
   return (
     <MarkdownViewer
       projectId={projectId}
-      tenderId={tenderId}
+      tenderId={tenderId || undefined}
       filePath={filePath}
+      documentType={documentType}
       onClose={handleClose}
     />
   );

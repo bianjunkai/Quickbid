@@ -11,12 +11,13 @@ import shutil
 import time
 import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -35,7 +36,7 @@ from agents.bid_parser.marker_scanner import (
     scan_markers,
     summarize_markers,
 )
-from agents.bid_parser.schema import k_field_value
+from agents.bid_parser.schema import k_field_items_with_pages, k_field_value
 
 # ---- 环境变量加载 ----
 # 优先从 .env 读 TENDER_DEEPSEEK_API_KEY 等敏感信息（已在 .gitignore 中）
@@ -123,6 +124,18 @@ class PriceCalculationRequest(BaseModel):
     price_score_max: Optional[float] = None
 
 
+class MarkdownContentRequest(BaseModel):
+    content: str
+
+
+class MatchChapterUpdateRequest(BaseModel):
+    chapter_id: str
+    file_path: Optional[str] = None
+    material_title: Optional[str] = None
+    match_score: str = "高"
+    reason: str = "用户手动选择"
+
+
 CORRECTION_FIELD_ALIASES = {
     "项目名称": "K01_项目名称",
     "项目名": "K01_项目名称",
@@ -154,6 +167,16 @@ class CreateMaterialRequest(BaseModel):
     content: str
     content_type: str = "markdown"
     tags: Optional[str] = None
+
+
+STANDARD_MATERIAL_CATEGORIES = [
+    "01_公司资质",
+    "02_业绩案例",
+    "03_技术方案",
+    "04_实施方案",
+    "05_商务文件",
+    "06_其他",
+]
 
 
 # ===========================
@@ -507,8 +530,8 @@ def _calculate_price_scores(
     highest_limit: float | None = None,
     price_score_max: float | None = None,
 ) -> dict[str, Any]:
-    price_score_max = price_score_max or _extract_price_score_max(parsed) or 30.0
-    low_price_ratio = low_price_ratio or _extract_low_price_ratio(parsed) or 0.8
+    price_score_max = price_score_max or _extract_price_score_max(parsed)
+    low_price_ratio = low_price_ratio or _extract_low_price_ratio(parsed)
     highest_limit = highest_limit or _parse_money_to_wan(k_field_value(parsed.get("K04_预算金额")))
 
     missing = []
@@ -581,6 +604,33 @@ def _calculate_price_scores(
         },
         "any_low_price_risk": any(row["triggers_low_price"] for row in rows),
         "message": "价格测算完成",
+    }
+
+
+def _price_calculator_defaults(parsed: dict[str, Any]) -> dict[str, Any]:
+    base = parsed.get("base") or {}
+    highest_limit = (
+        _parse_money_to_wan(k_field_value(parsed.get("K04_预算金额")))
+        or _parse_money_to_wan(base.get("budget") if isinstance(base, dict) else None)
+    )
+    low_price_ratio = _extract_low_price_ratio(parsed)
+    price_score_max = _extract_price_score_max(parsed)
+    missing = []
+    if highest_limit is None or highest_limit <= 0:
+        missing.append({"field": "highest_limit", "label": "最高限价"})
+    if low_price_ratio is None or low_price_ratio <= 0:
+        missing.append({"field": "low_price_ratio", "label": "异常低价触发比例"})
+    if price_score_max is None or price_score_max <= 0:
+        missing.append({"field": "price_score_max", "label": "价格分满分"})
+    return {
+        "highest_limit": highest_limit,
+        "highest_limit_display": _format_wan(highest_limit),
+        "low_price_ratio": low_price_ratio,
+        "low_price_ratio_display": f"{low_price_ratio * 100:.2f}%" if low_price_ratio else "—",
+        "price_score_max": price_score_max,
+        "price_score_max_display": f"{price_score_max:.2f} 分" if price_score_max else "—",
+        "missing": missing,
+        "ok": not missing,
     }
 
 
@@ -707,17 +757,174 @@ def _format_outline_refs(refs: list[dict[str, Any]] | None) -> str:
     return "；".join(parts)
 
 
+def _format_scoring_title(name: Any, score: Any = None) -> str:
+    title = re.sub(r"[；;:\s]+$", "", str(name or "").strip())
+    if not title:
+        return ""
+    if score in (None, ""):
+        return title
+    score_text = re.sub(r"\s+", "", str(score).strip())
+    if not score_text:
+        return title
+    if re.search(r"(分|%)$", score_text):
+        return f"{title} {score_text}"
+    return f"{title} {score_text}分"
+
+
+def _display_scoring_label(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[；;]\s*(\d+(?:\.\d+)?)\s*$", r" \1分", text)
+    text = re.sub(r"\s+(\d+(?:\.\d+)?)\s*$", r" \1分", text)
+    return text.replace("分分", "分")
+
+
+def _is_price_scoring_text(value: Any) -> bool:
+    text = str(value or "")
+    return any(kw in text for kw in ("报价", "价格", "投标报价", "开标一览", "分项报价"))
+
+
+def _outline_chapter_text(chapter: dict[str, Any]) -> str:
+    return " ".join(
+        [str(chapter.get("title") or "")]
+        + [
+            str(sub.get("title") or "")
+            for sub in chapter.get("subsections") or []
+            if isinstance(sub, dict)
+        ]
+    )
+
+
+def _price_scoring_titles(parsed: dict[str, Any]) -> list[str]:
+    scoring = parsed.get("scoring") or {}
+    titles: list[str] = []
+    for dim in scoring.get("dimensions") or []:
+        if not isinstance(dim, dict):
+            continue
+        dim_name = str(dim.get("name") or "")
+        dim_score = dim.get("max_score")
+        dim_titles: list[str] = []
+        for sub in dim.get("sub_items") or []:
+            if not isinstance(sub, dict):
+                continue
+            sub_name = str(sub.get("name") or "")
+            if _is_price_scoring_text(f"{dim_name} {sub_name}"):
+                label = _format_scoring_title(sub_name or dim_name, sub.get("score") or dim_score)
+                if label and label not in dim_titles:
+                    dim_titles.append(label)
+        if dim_titles:
+            for label in dim_titles:
+                if label not in titles:
+                    titles.append(label)
+        elif _is_price_scoring_text(dim_name):
+            label = _format_scoring_title(dim_name, dim_score)
+            if label and label not in titles:
+                titles.append(label)
+    return titles
+
+
+def _normalize_outline_for_display(
+    outline: list[dict[str, Any]],
+    parsed: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for idx, source in enumerate(outline, 1):
+        if not isinstance(source, dict):
+            continue
+        chapter = dict(source)
+        chapter["no"] = idx
+        if chapter.get("title"):
+            chapter["title"] = _display_scoring_label(chapter["title"])
+        chapter["subsections"] = [
+            {
+                **sub,
+                "title": _display_scoring_label(sub.get("title")),
+            }
+            if isinstance(sub, dict)
+            else {"id": f"{chapter.get('id') or f'ch{idx}'}.{j}", "title": _display_scoring_label(sub)}
+            for j, sub in enumerate(chapter.get("subsections") or [], 1)
+        ]
+
+        chapter_text = _outline_chapter_text(chapter)
+        filtered_refs = []
+        for ref in chapter.get("scoring_refs") or []:
+            if not isinstance(ref, dict):
+                continue
+            ref_copy = dict(ref)
+            if ref_copy.get("label"):
+                ref_copy["label"] = _display_scoring_label(ref_copy["label"])
+            ref_text = f"{ref_copy.get('label') or ''} {ref_copy.get('quote') or ''}"
+            if _is_price_scoring_text(ref_text) and not _is_price_scoring_text(chapter_text):
+                continue
+            filtered_refs.append(ref_copy)
+        chapter["scoring_refs"] = filtered_refs
+        normalized.append(chapter)
+
+    if parsed:
+        price_titles = _price_scoring_titles(parsed)
+        if price_titles:
+            target = next(
+                (ch for ch in normalized if _is_price_scoring_text(_outline_chapter_text(ch))),
+                None,
+            )
+            if target is None:
+                target = {
+                    "id": f"ch{len(normalized) + 1}",
+                    "no": len(normalized) + 1,
+                    "title": "投标报价文件",
+                    "volume": "commercial",
+                    "category": "05_商务文件",
+                    "subsections": [],
+                    "source": "scoring",
+                    "requirement_refs": [],
+                    "scoring_refs": [],
+                }
+                normalized.append(target)
+            subs = target.setdefault("subsections", [])
+            existing_titles = {
+                str(sub.get("title") or "")
+                for sub in subs
+                if isinstance(sub, dict)
+            }
+            for title in price_titles:
+                if title not in existing_titles:
+                    subs.append({
+                        "id": f"{target.get('id') or 'ch'}.{len(subs) + 1}",
+                        "title": title,
+                        "source": "scoring",
+                    })
+                    existing_titles.add(title)
+
+    for idx, chapter in enumerate(normalized, 1):
+        chapter["no"] = idx
+        chapter["id"] = chapter.get("id") or f"ch{idx}"
+        for sub_idx, sub in enumerate(chapter.get("subsections") or [], 1):
+            if isinstance(sub, dict):
+                sub["id"] = sub.get("id") or f"{chapter['id']}.{sub_idx}"
+    return normalized
+
+
+def _normalize_project_parsed_data_for_display(parsed: dict[str, Any]) -> dict[str, Any]:
+    out = dict(parsed)
+    for key in ("_generated_outline", "_confirmed_outline"):
+        value = out.get(key)
+        if isinstance(value, list):
+            out[key] = _normalize_outline_for_display(value, out)
+    return out
+
+
 def _build_outline_markdown(project: Project, outline: list[dict[str, Any]]) -> str:
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    outline = _normalize_outline_for_display(outline, parsed)
     lines = [
         f"# {project.project_name or project.name} - 投标文件提纲",
         "",
-        f"- **项目 ID**: {project.id}",
+        "<!-- 编辑说明：直接修改章节标题、分类和小节；保存后工作流会使用此提纲。 -->",
+        "",
+        f"- 项目 ID: {project.id}",
     ]
     if project.tender_no:
-        lines.append(f"- **招标编号**: {project.tender_no}")
+        lines.append(f"- 招标编号: {project.tender_no}")
     lines.extend([
-        "",
-        "## 两级目录",
         "",
     ])
 
@@ -729,27 +936,179 @@ def _build_outline_markdown(project: Project, outline: list[dict[str, Any]]) -> 
     for volume, chapters in grouped.items():
         if not chapters:
             continue
-        lines.extend(["", f"### {_volume_label(volume)}", ""])
+        lines.extend(["", f"## {_volume_label(volume)}", ""])
         for no, ch in enumerate(chapters, 1):
             title = ch.get("title") or f"第{no}章"
             category = ch.get("category") or "未分类"
             source = ch.get("source") or "unknown"
-            lines.append(f"{no}. **{title}**")
-            lines.append(f"   - 分类: `{category}`")
-            lines.append(f"   - 来源: `{source}`")
-            lines.append(
-                f"   - 投标要求位置: {_format_outline_refs(ch.get('requirement_refs'))}"
-            )
-            lines.append(
-                f"   - 评分位置: {_format_outline_refs(ch.get('scoring_refs'))}"
-            )
+            lines.append(f"### {title}")
+            lines.append(f"- 分类: `{category}`")
+            lines.append(f"- 来源: `{source}`")
+            lines.append(f"- 投标要求位置: {_format_outline_refs(ch.get('requirement_refs'))}")
+            lines.append(f"- 评分位置: {_format_outline_refs(ch.get('scoring_refs'))}")
             for sub in ch.get("subsections") or []:
                 sub_title = sub.get("title") if isinstance(sub, dict) else str(sub)
                 if sub_title:
-                    lines.append(f"   - {sub_title}")
+                    lines.append(f"- {sub_title}")
             lines.append("")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _parse_outline_markdown(markdown: str, existing: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    existing_by_title = {
+        str(ch.get("title") or "").strip(): ch
+        for ch in (existing or [])
+        if str(ch.get("title") or "").strip()
+    }
+    outline: list[dict[str, Any]] = []
+    volume = "commercial"
+    current: dict[str, Any] | None = None
+
+    def push_current():
+        nonlocal current
+        if current and str(current.get("title") or "").strip():
+            outline.append(current)
+        current = None
+
+    for raw in markdown.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("<!--"):
+            continue
+        if re.match(r"^#{1,2}\s+.*商务文件", line):
+            push_current()
+            volume = "commercial"
+            continue
+        if re.match(r"^#{1,2}\s+.*技术文件", line):
+            push_current()
+            volume = "technical"
+            continue
+        heading = re.match(r"^###\s+(.+)$", line)
+        numbered = re.match(r"^\d+[\.\、]\s+\*\*(.+?)\*\*", line)
+        if heading or numbered:
+            push_current()
+            title = (heading.group(1) if heading else numbered.group(1)).strip()
+            prior = existing_by_title.get(title, {})
+            current = {
+                "id": prior.get("id") or f"ch{len(outline) + 1}",
+                "no": len(outline) + 1,
+                "title": title,
+                "volume": prior.get("volume") or volume,
+                "category": prior.get("category") or ("03_技术方案" if volume == "technical" else "05_商务文件"),
+                "subsections": [],
+                "source": prior.get("source") or "user_edited",
+            }
+            for key in ("requirement_refs", "scoring_refs"):
+                if key in prior:
+                    current[key] = prior[key]
+            continue
+        if not current:
+            continue
+        category = re.match(r"^-\s*分类[:：]\s*`?([^`]+?)`?\s*$", line)
+        if category:
+            value = category.group(1).strip()
+            if value in STANDARD_MATERIAL_CATEGORIES:
+                current["category"] = value
+            continue
+        source = re.match(r"^-\s*来源[:：]\s*`?([^`]+?)`?\s*$", line)
+        if source:
+            current["source"] = source.group(1).strip() or "user_edited"
+            continue
+        if re.match(r"^-\s*(投标要求位置|评分位置)[:：]", line):
+            continue
+        bullet = re.match(r"^-\s+(.+)$", line)
+        if bullet:
+            title = bullet.group(1).strip()
+            if title:
+                current.setdefault("subsections", []).append({
+                    "id": f"{current.get('id')}.{len(current.get('subsections') or []) + 1}",
+                    "title": title,
+                })
+    push_current()
+    for idx, ch in enumerate(outline, 1):
+        ch["no"] = idx
+        if not ch.get("id"):
+            ch["id"] = f"ch{idx}"
+    return outline
+
+
+def _deviation_items_from_parsed(parsed: dict[str, Any]) -> dict[str, list[str]]:
+    confirmed = parsed.get("_confirmed_deviation_items")
+    pending = parsed.get("_pending_deviation_items")
+    if isinstance(pending, dict):
+        source = pending
+    elif isinstance(confirmed, dict):
+        source = confirmed
+    else:
+        source = {
+            "business": Orchestrator._business_deviation_items(parsed),
+            "technical": Orchestrator._technical_deviation_items(parsed),
+        }
+        star_items = [
+            item for item, _page in k_field_items_with_pages(parsed.get("K10_星标项"))
+        ]
+        for item in star_items:
+            target = Orchestrator._deviation_item_target(item)
+            if target in source and item not in source[target]:
+                source[target].append(item)
+    return {
+        "business": [str(v).strip() for v in source.get("business", []) if str(v).strip()],
+        "technical": [str(v).strip() for v in source.get("technical", []) if str(v).strip()],
+    }
+
+
+def _build_deviation_editor_markdown(project: Project, parsed: dict[str, Any]) -> str:
+    items = _deviation_items_from_parsed(parsed)
+    project_name = k_field_value(parsed.get("K01_项目名称")) or project.project_name or project.name
+    lines = [
+        f"# {project_name} - 商务/技术条款偏离表",
+        "",
+        "<!-- 编辑说明：修改表格第二列的招标条款/要求；保存后确认生成会使用这些条目。 -->",
+        "",
+        "## 商务条款偏离表",
+        "",
+        "| 序号 | 招标条款/要求 | 投标响应 | 偏离情况 | 说明 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for idx, item in enumerate(items["business"], 1):
+        lines.append(f"| {idx} | {Orchestrator._table_cell(item)} | 完全响应 | 无偏离 | 按招标文件及商务资质材料响应 |")
+    if not items["business"]:
+        lines.append("| 1 | 待补充商务条款 | 待补充 | 待确认 | 保存前请替换本行 |")
+    lines.extend([
+        "",
+        "## 技术条款偏离表",
+        "",
+        "| 序号 | 招标技术要求 | 投标响应 | 偏离情况 | 说明 |",
+        "| --- | --- | --- | --- | --- |",
+    ])
+    for idx, item in enumerate(items["technical"], 1):
+        lines.append(f"| {idx} | {Orchestrator._table_cell(item)} | 完全响应 | 无偏离 | 技术方案章节已响应 |")
+    if not items["technical"]:
+        lines.append("| 1 | 待补充技术条款 | 待补充 | 待确认 | 保存前请替换本行 |")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _parse_deviation_markdown(markdown: str) -> dict[str, list[str]]:
+    target: str | None = None
+    result = {"business": [], "technical": []}
+    for raw in markdown.splitlines():
+        line = raw.strip()
+        if re.match(r"^##\s+商务", line):
+            target = "business"
+            continue
+        if re.match(r"^##\s+技术", line):
+            target = "technical"
+            continue
+        if not target or not line.startswith("|") or "---" in line:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if cells and cells[0] == "序号":
+            continue
+        if len(cells) >= 2:
+            item = cells[1].replace("\\|", "|").strip()
+            if item and not item.startswith("待补充") and item not in result[target]:
+                result[target].append(item)
+    return result
 
 
 def _export_outline_file(project: Project, fmt: str = "markdown") -> dict:
@@ -793,6 +1152,10 @@ def get_project(project_id: int):
         next((t for t in tenders if t.type == "main"), None),
     )
 
+    parsed_data = json.loads(project.parsed_data) if project.parsed_data else None
+    if isinstance(parsed_data, dict):
+        parsed_data = _normalize_project_parsed_data_for_display(parsed_data)
+
     return {
         "id": project.id,
         "name": project.name,
@@ -807,10 +1170,80 @@ def get_project(project_id: int):
         "active_main_tender_id": active_main_tender.id if active_main_tender else None,
         "tenders": [_tender_summary(t) for t in tenders],
         # 包含已解析数据（前端 ChatView 重新进入项目时恢复解析报告）
-        "parsed_data": json.loads(project.parsed_data) if project.parsed_data else None,
+        "parsed_data": parsed_data,
         # 对话历史（UIMessage[]，useChat 初始化时回填）
         "messages": json.loads(project.messages_json) if project.messages_json else [],
     }
+
+
+@app.get("/projects/{project_id}/outline/markdown")
+def get_outline_markdown(project_id: int):
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    outline = parsed.get("_confirmed_outline") or parsed.get("_generated_outline") or []
+    if not outline:
+        raise HTTPException(404, "尚未生成提纲")
+    return PlainTextResponse(
+        _build_outline_markdown(project, outline),
+        media_type="text/markdown; charset=utf-8",
+    )
+
+
+@app.put("/projects/{project_id}/outline/markdown")
+def save_outline_markdown(project_id: int, req: MarkdownContentRequest):
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    existing = parsed.get("_confirmed_outline") or parsed.get("_generated_outline") or []
+    outline = _parse_outline_markdown(req.content, existing)
+    if not outline:
+        raise HTTPException(400, "Markdown 中未解析到有效章节")
+    parsed["_generated_outline"] = outline
+    if project.status not in {"parsed", "outline_generating"}:
+        parsed["_confirmed_outline"] = outline
+    else:
+        parsed.pop("_confirmed_outline", None)
+        project.status = "outline_generating"
+    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
+    session.commit()
+    return {"message": "提纲已保存", "outline": outline, "total": len(outline)}
+
+
+@app.get("/projects/{project_id}/deviation/markdown")
+def get_deviation_markdown(project_id: int):
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    if not parsed:
+        raise HTTPException(404, "尚未解析招标文件")
+    return PlainTextResponse(
+        _build_deviation_editor_markdown(project, parsed),
+        media_type="text/markdown; charset=utf-8",
+    )
+
+
+@app.put("/projects/{project_id}/deviation/markdown")
+def save_deviation_markdown(project_id: int, req: MarkdownContentRequest):
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    items = _parse_deviation_markdown(req.content)
+    parsed["_pending_deviation_items"] = items
+    parsed.pop("_confirmed_deviation_items", None)
+    if project.status not in {"generating", "generated", "reviewing", "reviewed", "done"}:
+        project.status = "deviation_preparing"
+    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
+    session.commit()
+    return {"message": "偏离表条目已保存", **items}
 
 
 @app.delete("/projects/{project_id}")
@@ -2261,6 +2694,109 @@ def calculate_price(project_id: int, req: PriceCalculationRequest):
     )
 
 
+@app.get("/projects/{project_id}/price-calculator/defaults")
+def get_price_calculator_defaults(project_id: int):
+    """Return price calculator parameters extracted from parsed tender data."""
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    return _price_calculator_defaults(parsed)
+
+
+def _safe_material_filename(filename: str, fallback: str = "material.md") -> str:
+    raw_name = Path(filename or fallback).name
+    safe = re.sub(r"[^\w一-鿿\-.]", "_", raw_name).strip("._")
+    return safe or fallback
+
+
+def _next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for idx in range(2, 1000):
+        candidate = path.with_name(f"{stem}_{idx}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise HTTPException(409, f"同名材料过多：{path.name}")
+
+
+def _extract_uploaded_material_text(filename: str, content: bytes) -> tuple[str, str]:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in {".md", ".txt"}:
+        return content.decode("utf-8", errors="ignore"), ".md"
+    if suffix == ".docx":
+        try:
+            from docx import Document
+            doc = Document(BytesIO(content))
+            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            return text, ".docx"
+        except Exception:
+            return "", ".docx"
+    if suffix == ".pdf":
+        try:
+            import fitz
+            doc = fitz.open(stream=content, filetype="pdf")
+            text = "\n\n".join(page.get_text("text") for page in doc)
+            return text.strip(), ".md"
+        except Exception as exc:
+            raise HTTPException(400, f"PDF 材料解析失败：{exc}") from exc
+    raise HTTPException(400, f"不支持的材料类型：{suffix or '无后缀'}")
+
+
+def _write_material_file(category: str, filename: str, content: bytes, text: str, storage_suffix: str) -> Path:
+    if category not in STANDARD_MATERIAL_CATEGORIES:
+        raise HTTPException(400, "材料分类无效")
+    category_dir = MATERIALS_DIR / category
+    category_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_material_filename(filename)
+    if storage_suffix == ".md":
+        target = _next_available_path(category_dir / f"{Path(safe_name).stem}.md")
+        if not text.strip():
+            text = content.decode("utf-8", errors="ignore")
+        target.write_text(text.strip() + "\n", encoding="utf-8")
+        return target
+    target = _next_available_path(category_dir / safe_name)
+    target.write_bytes(content)
+    return target
+
+
+def _material_path_from_request(file_path: str) -> Path:
+    root = MATERIALS_DIR.resolve()
+    target = Path(file_path).expanduser().resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(403, "材料路径越界")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "材料不存在")
+    return target
+
+
+def _read_material_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    content = path.read_bytes()
+    if suffix in {".md", ".txt"}:
+        return content.decode("utf-8", errors="ignore")
+    if suffix == ".docx":
+        try:
+            from docx import Document
+            doc = Document(BytesIO(content))
+            return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except Exception as exc:
+            raise HTTPException(400, f"DOCX 材料读取失败：{exc}") from exc
+    if suffix == ".pdf":
+        try:
+            import fitz
+            doc = fitz.open(stream=content, filetype="pdf")
+            return "\n\n".join(page.get_text("text") for page in doc).strip()
+        except Exception as exc:
+            raise HTTPException(400, f"PDF 材料读取失败：{exc}") from exc
+    raise HTTPException(400, "仅支持读取 .md / .txt / .docx / .pdf 材料")
+
+
 # ---- 材料库管理 ----
 
 @app.get("/materials")
@@ -2305,8 +2841,59 @@ def list_materials(category: Optional[str] = None, keyword: Optional[str] = None
     return result
 
 
+@app.get("/materials/options")
+def list_material_options(category: Optional[str] = None, keyword: Optional[str] = None):
+    """返回可用于替换匹配结果的材料，包含 file_path。"""
+    from agents.matcher_agent import MatcherAgent
+
+    matcher = MatcherAgent()
+    all_materials = matcher._load_materials_from_disk()
+    filtered = all_materials
+    if category:
+        filtered = [m for m in filtered if m["category"] == category]
+    if keyword:
+        filtered = [m for m in filtered if keyword.lower() in m["title"].lower()]
+
+    result = []
+    for m in filtered:
+        file_path = Path(m["file_path"])
+        char_count = 0
+        if file_path.exists() and file_path.suffix.lower() in {".md", ".txt"}:
+            try:
+                char_count = len(file_path.read_text(encoding="utf-8"))
+            except Exception:
+                char_count = 0
+        result.append({
+            "title": m["title"],
+            "category": m["category"],
+            "file_path": m["file_path"],
+            "char_count": char_count,
+        })
+    return result
+
+
+@app.get("/materials/read")
+def read_material_file(file_path: str):
+    path = _material_path_from_request(file_path)
+    return {
+        "title": path.stem,
+        "file_path": str(path),
+        "content": _read_material_text(path),
+    }
+
+
 @app.post("/materials")
 def create_material(req: CreateMaterialRequest):
+    text = req.content.strip()
+    if req.category not in STANDARD_MATERIAL_CATEGORIES:
+        raise HTTPException(400, "材料分类无效")
+    disk_path = _write_material_file(
+        req.category,
+        f"{req.title or 'material'}.md",
+        text.encode("utf-8"),
+        text,
+        ".md",
+    )
     session = get_session()
     material = Material(
         title=req.title,
@@ -2316,11 +2903,65 @@ def create_material(req: CreateMaterialRequest):
         content_type=req.content_type,
         tags=req.tags,
         char_count=len(req.content),
+        source_file=str(disk_path),
     )
     session.add(material)
     session.commit()
     session.refresh(material)
-    return {"id": material.id, "title": material.title, "message": "材料已添加"}
+    return {"id": material.id, "title": material.title, "file_path": str(disk_path), "message": "材料已添加"}
+
+
+@app.post("/projects/{project_id}/materials/upload")
+async def upload_project_material(
+    project_id: int,
+    category: str = Form(...),
+    chapter: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+):
+    """上传项目补充材料，并归档到磁盘材料库供后续匹配使用。"""
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "上传文件为空")
+    text, storage_suffix = _extract_uploaded_material_text(file.filename or "material.md", content)
+    disk_path = _write_material_file(category, file.filename or "material.md", content, text, storage_suffix)
+    material = Material(
+        title=disk_path.stem,
+        category=category,
+        description=f"项目 {project.name} 上传材料",
+        content=text,
+        content_type="markdown" if storage_suffix == ".md" else "docx",
+        source_file=str(disk_path),
+        char_count=len(text),
+    )
+    session.add(material)
+    session.flush()
+    active_tender = (
+        session.query(Tender)
+        .filter(Tender.project_id == project_id, Tender.type == "main")
+        .order_by(Tender.id.desc())
+        .first()
+    )
+    usage = MaterialUsage(
+        material_id=material.id,
+        project_id=project_id,
+        tender_id=active_tender.id if active_tender else None,
+        chapter=chapter,
+    )
+    session.add(usage)
+    session.commit()
+    session.refresh(material)
+    return {
+        "id": material.id,
+        "title": material.title,
+        "category": material.category,
+        "file_path": str(disk_path),
+        "char_count": material.char_count,
+        "message": "材料已上传并归档到主标材料库",
+    }
 
 
 # ---- 标书生成（委托给 Orchestrator 自动工作流）----
@@ -2472,6 +3113,38 @@ def read_tender_file(project_id: int, tender_id: int, file_path: str):
     )
 
 
+@app.put("/projects/{project_id}/tenders/{tender_id}/files/{file_path:path}")
+def save_tender_file(project_id: int, tender_id: int, file_path: str, req: MarkdownContentRequest):
+    """保存单个生成后的 .md 文件。"""
+    session = get_session()
+    project = session.get(Project, project_id)
+    tender = session.get(Tender, tender_id)
+    if not project or not tender or tender.project_id != project_id:
+        raise HTTPException(404, "项目或标书不存在")
+    if not tender.draft_path:
+        raise HTTPException(404, "标书未生成文件")
+
+    main_dir = Path(tender.draft_path).parent.resolve()
+    target = (main_dir / file_path).resolve()
+    try:
+        target.relative_to(main_dir)
+    except ValueError:
+        raise HTTPException(403, "路径越界")
+
+    if target.suffix.lower() != ".md":
+        raise HTTPException(400, "仅支持保存 .md 文件")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, f"文件不存在: {file_path}")
+
+    target.write_text(req.content, encoding="utf-8")
+    if target.name == "deviation.md":
+        tender.deviation_path = str(target)
+    if target.name == "draft.md":
+        tender.draft_path = str(target)
+    session.commit()
+    return {"message": "文件已保存", "path": file_path, "size": len(req.content)}
+
+
 @app.get("/projects/{project_id}/match")
 def match_materials(project_id: int, tender_type: str = "main"):
     """用已确认的提纲做材料匹配（前提：提纲已确认；如未确认则自动生成一份）。"""
@@ -2508,6 +3181,63 @@ def match_materials(project_id: int, tender_type: str = "main"):
         "chapters": match_result.get("chapters", []),
         "action_hint": "可以告诉我需要替换哪个章节，或说'继续'进入生成"
     }
+
+
+@app.patch("/projects/{project_id}/match/chapter")
+def update_matched_chapter(project_id: int, req: MatchChapterUpdateRequest):
+    """保存用户手动调整后的章节-材料匹配。"""
+    session = get_session()
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    parsed = json.loads(project.parsed_data) if project.parsed_data else {}
+    chapters = parsed.get("chapters")
+    if not isinstance(chapters, list):
+        raise HTTPException(400, "当前项目还没有材料匹配结果")
+
+    matched = None
+    for chapter in chapters:
+        if isinstance(chapter, dict) and chapter.get("chapter_id") == req.chapter_id:
+            matched = chapter
+            break
+    if matched is None:
+        raise HTTPException(404, "章节匹配项不存在")
+
+    if req.file_path:
+        path = _material_path_from_request(req.file_path)
+        matched["file_path"] = str(path)
+        matched["material_title"] = req.material_title or path.stem
+    else:
+        matched["file_path"] = None
+        matched["material_title"] = req.material_title or "无匹配材料"
+    matched["match_score"] = req.match_score or "高"
+    matched["reason"] = req.reason or "用户手动选择"
+    matched["alternatives"] = [
+        alt for alt in matched.get("alternatives", [])
+        if isinstance(alt, dict) and alt.get("file_path") != matched.get("file_path")
+    ]
+    matched_sources = matched.get("matched_sources") if isinstance(matched.get("matched_sources"), list) else []
+    if req.file_path:
+        matched_sources = [
+            {
+                "source_type": "material_library",
+                "title": matched["material_title"],
+                "file_path": matched["file_path"],
+                "match_score": matched["match_score"],
+                "reason": matched["reason"],
+                "evidence": [],
+            }
+        ] + [
+            source for source in matched_sources
+            if not (isinstance(source, dict) and source.get("source_type") == "material_library")
+        ]
+    matched["matched_sources"] = matched_sources
+
+    parsed["chapters"] = chapters
+    project.parsed_data = json.dumps(parsed, ensure_ascii=False)
+    project.status = "materials_preparing"
+    session.commit()
+    return {"message": "匹配结果已更新", "chapter": matched}
 
 
 @app.post("/projects/{project_id}/outline/export")

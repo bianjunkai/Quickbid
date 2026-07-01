@@ -9,17 +9,27 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Edit3,
+  Eye,
   FileText,
   Loader2,
+  Save,
   X,
 } from "lucide-react";
-import { readTenderFile, ApiError } from "@/lib/api";
+import {
+  ApiError,
+  readProjectMarkdown,
+  readTenderFile,
+  saveProjectMarkdown,
+  saveTenderFile,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Props = {
   projectId: number;
   tenderId?: number;
-  filePath: string;
+  filePath?: string;
+  documentType?: "file" | "outline" | "deviation";
   onClose: () => void;
 };
 
@@ -28,30 +38,51 @@ export function MarkdownViewer({
   projectId,
   tenderId,
   filePath,
+  documentType = "file",
   onClose,
 }: Props) {
   const [content, setContent] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copyOk, setCopyOk] = useState(false);
+  const [mode, setMode] = useState<"preview" | "edit">("preview");
+  const [saving, setSaving] = useState(false);
+  const [saveOk, setSaveOk] = useState(false);
 
-  const folder = filePath.includes("/")
-    ? filePath.slice(0, filePath.lastIndexOf("/"))
+  const effectivePath = filePath || `${documentType}.md`;
+  const folder = effectivePath.includes("/")
+    ? effectivePath.slice(0, effectivePath.lastIndexOf("/"))
     : "";
-  const fileName = filePath.includes("/")
-    ? filePath.slice(filePath.lastIndexOf("/") + 1)
-    : filePath;
+  const fileName =
+    documentType === "outline"
+      ? "章节大纲.md"
+      : documentType === "deviation"
+      ? "偏离表.md"
+      : effectivePath.includes("/")
+      ? effectivePath.slice(effectivePath.lastIndexOf("/") + 1)
+      : effectivePath;
 
   useEffect(() => {
     let cancelled = false;
     setContent(null);
+    setDraft("");
     setError(null);
-    if (!tenderId) {
+    const reader =
+      documentType === "file"
+        ? tenderId
+          ? readTenderFile(projectId, tenderId, effectivePath)
+          : Promise.reject(new Error("未找到对应标书 (tenderId 缺失)"))
+        : readProjectMarkdown(projectId, documentType);
+    if (documentType === "file" && !tenderId) {
       setError("未找到对应标书 (tenderId 缺失)");
       return;
     }
-    readTenderFile(projectId, tenderId, filePath)
+    reader
       .then((text) => {
-        if (!cancelled) setContent(text);
+        if (!cancelled) {
+          setContent(text);
+          setDraft(text);
+        }
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -62,7 +93,7 @@ export function MarkdownViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, tenderId, filePath]);
+  }, [projectId, tenderId, effectivePath, documentType]);
 
   // ESC 关闭
   useEffect(() => {
@@ -102,6 +133,30 @@ export function MarkdownViewer({
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveOk(false);
+    setError(null);
+    try {
+      if (documentType === "file") {
+        if (!tenderId) throw new Error("未找到对应标书 (tenderId 缺失)");
+        await saveTenderFile(projectId, tenderId, effectivePath, draft);
+      } else {
+        await saveProjectMarkdown(projectId, documentType, draft);
+      }
+      setContent(draft);
+      setSaveOk(true);
+      setMode("preview");
+      setTimeout(() => setSaveOk(false), 1800);
+    } catch (e: unknown) {
+      if (e instanceof ApiError) setError(`${e.status} ${e.message}`);
+      else if (e instanceof Error) setError(e.message);
+      else setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="absolute inset-0 z-20 bg-[var(--color-paper)] flex flex-col">
       {/* Top bar */}
@@ -136,6 +191,22 @@ export function MarkdownViewer({
             {copyOk ? "已复制" : "复制"}
           </button>
           <button
+            onClick={() => setMode((m) => (m === "preview" ? "edit" : "preview"))}
+            disabled={!content}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {mode === "preview" ? <Edit3 className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            {mode === "preview" ? "编辑" : "预览"}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!content || saving || draft === content}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saveOk ? <Check className="w-3.5 h-3.5 text-[var(--color-success)]" /> : <Save className="w-3.5 h-3.5" />}
+            {saving ? "保存中" : saveOk ? "已保存" : "保存"}
+          </button>
+          <button
             onClick={handleDownload}
             disabled={!content}
             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -160,6 +231,15 @@ export function MarkdownViewer({
           <ErrorState message={error} />
         ) : content === null ? (
           <LoadingState />
+        ) : mode === "edit" ? (
+          <div className="h-full p-5">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              spellCheck={false}
+              className="w-full h-[calc(100vh-132px)] resize-none rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4 font-mono text-[13px] leading-7 text-[var(--color-ink)] shadow-sm outline-none focus:border-[var(--color-primary)]"
+            />
+          </div>
         ) : (
           <article
             className={cn(

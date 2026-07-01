@@ -263,6 +263,7 @@ class MatcherAgent(BaseAgent):
             used_fallback = True
 
         outline_chapters = self._apply_template_requirements(outline_chapters, parsed)
+        outline_chapters = self._ensure_price_scoring_chapter(outline_chapters, parsed)
         outline_chapters = self._attach_outline_refs(outline_chapters, parsed)
 
         # 写回 ctx
@@ -948,6 +949,126 @@ class MatcherAgent(BaseAgent):
         return out
 
     @staticmethod
+    def _ensure_price_scoring_chapter(
+        outline: list[dict[str, Any]],
+        parsed: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Ensure price/quote scoring items have an explicit outline target."""
+        scoring = parsed.get("scoring") or {}
+        price_items: list[str] = []
+        for dim in scoring.get("dimensions") or []:
+            if not isinstance(dim, dict):
+                continue
+            dim_name = str(dim.get("name") or "")
+            dim_score = dim.get("max_score")
+            dim_is_price = any(kw in dim_name for kw in ("价格", "报价", "投标报价"))
+            dim_price_items: list[str] = []
+            for sub in dim.get("sub_items") or []:
+                if not isinstance(sub, dict):
+                    continue
+                sub_name = str(sub.get("name") or "")
+                text = f"{dim_name} {sub_name}"
+                if any(kw in text for kw in ("价格", "报价", "投标报价")):
+                    label = MatcherAgent._format_scoring_title(
+                        sub_name or dim_name,
+                        sub.get("score") or dim_score,
+                    )
+                    if label and label not in dim_price_items:
+                        dim_price_items.append(label)
+            if dim_price_items:
+                for label in dim_price_items:
+                    if label not in price_items:
+                        price_items.append(label)
+            elif dim_is_price:
+                label = MatcherAgent._format_scoring_title(dim_name, dim_score)
+                if label and label not in price_items:
+                    price_items.append(label)
+        if not price_items:
+            return outline
+
+        out = [dict(ch) for ch in outline]
+        for ch in out:
+            ch["subsections"] = list(ch.get("subsections") or [])
+
+        target = None
+        for ch in out:
+            text = f"{ch.get('title') or ''} {' '.join(str(s.get('title') or '') for s in ch.get('subsections') or [] if isinstance(s, dict))}"
+            if any(kw in text for kw in ("报价", "价格", "开标一览", "分项报价")):
+                target = ch
+                break
+        if target is None:
+            target = {
+                "id": f"ch{len(out) + 1}",
+                "no": len(out) + 1,
+                "title": "投标报价文件",
+                "volume": "commercial",
+                "category": "05_商务文件",
+                "subsections": [],
+                "source": "scoring",
+            }
+            out.append(target)
+        else:
+            target["source"] = "scoring" if target.get("source") != "k12" else target.get("source")
+            target["volume"] = "commercial"
+            target["category"] = "05_商务文件"
+
+        subs = target.setdefault("subsections", [])
+        for item in price_items:
+            if not any(isinstance(s, dict) and s.get("title") == item for s in subs):
+                subs.append({
+                    "id": f"{target.get('id', 'ch')}.{len(subs) + 1}",
+                    "title": item,
+                    "source": "scoring",
+                })
+
+        for i, ch in enumerate(out, 1):
+            ch["no"] = i
+            ch["id"] = ch.get("id") or f"ch{i}"
+            for j, sub in enumerate(ch.get("subsections") or [], 1):
+                if isinstance(sub, dict):
+                    sub["id"] = f"{ch['id']}.{j}"
+        return out
+
+    @staticmethod
+    def _format_scoring_title(name: Any, score: Any = None) -> str:
+        title = re.sub(r"[；;:\s]+$", "", str(name or "").strip())
+        if not title:
+            return ""
+        if score in (None, ""):
+            return title
+        score_text = str(score).strip()
+        if not score_text:
+            return title
+        score_text = re.sub(r"\s+", "", score_text)
+        if re.search(r"(分|%)$", score_text):
+            return f"{title} {score_text}"
+        return f"{title} {score_text}分"
+
+    @staticmethod
+    def _is_price_scoring_text(text: str) -> bool:
+        return any(kw in str(text or "") for kw in ("报价", "价格", "投标报价", "开标一览", "分项报价"))
+
+    @staticmethod
+    def _ref_matches_chapter_scoring(ref: dict[str, Any], chapter_text: str) -> bool:
+        ref_text = f"{ref.get('label') or ''} {ref.get('quote') or ''}"
+        if not ref_text.strip() or not chapter_text.strip():
+            return False
+        if MatcherAgent._is_price_scoring_text(ref_text) != MatcherAgent._is_price_scoring_text(chapter_text):
+            return False
+
+        weak_tokens = {
+            "评分", "得分", "部分", "方案", "文件", "要求", "材料", "内容",
+            "项目", "供应", "投标", "响应", "技术", "商务", "其他", "最高", "提供",
+        }
+        keywords = [
+            kw for kw in MatcherAgent._extract_chapter_keywords(chapter_text)[:20]
+            if len(kw) >= 2 and kw not in weak_tokens
+        ]
+        if not keywords:
+            return False
+        return any(kw in ref_text for kw in keywords)
+
+    @staticmethod
     def _extract_template_items(parsed: dict[str, Any]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -1126,11 +1247,9 @@ class MatcherAgent(BaseAgent):
                             f".sub_items[{sub_i}]"
                         ),
                     )
-                    ref["label"] = "；".join(
-                        str(v) for v in [
-                            sub.get("name") or dim_name or "评分项",
-                            sub.get("score"),
-                        ] if v not in (None, "")
+                    ref["label"] = MatcherAgent._format_scoring_title(
+                        sub.get("name") or dim_name or "评分项",
+                        sub.get("score"),
                     )
                     detailed_scoring_refs.append(ref)
 
@@ -1141,7 +1260,19 @@ class MatcherAgent(BaseAgent):
                 ch["scoring_refs"] = []
             elif source == "scoring":
                 ch["requirement_refs"] = []
-                ch["scoring_refs"] = (detailed_scoring_refs or scoring_refs)[:3]
+                chapter_text = " ".join(
+                    [str(ch.get("title") or "")]
+                    + [
+                        str(s.get("title") or "")
+                        for s in ch.get("subsections") or []
+                        if isinstance(s, dict)
+                    ]
+                )
+                matched_refs = [
+                    ref for ref in detailed_scoring_refs
+                    if MatcherAgent._ref_matches_chapter_scoring(ref, chapter_text)
+                ]
+                ch["scoring_refs"] = matched_refs[:3]
             else:
                 ch["requirement_refs"] = k12_refs[:1] if k12_refs else []
                 ch["scoring_refs"] = []

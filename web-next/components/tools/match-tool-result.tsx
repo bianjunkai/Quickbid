@@ -1,8 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, AlertOctagon, Loader2, BookOpen, Check, Layers } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, AlertOctagon, Loader2, BookOpen, Check, Eye, Plus, Save, Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  listMaterialOptions,
+  readMaterialFile,
+  updateMatchedChapter,
+  uploadProjectMaterial,
+  type MaterialOption,
+} from "@/lib/api";
 
 const CATEGORY_LABEL: Record<string, string> = {
   "01_公司资质": "公司资质",
@@ -29,6 +36,7 @@ type MatchedChapter = {
   match_score?: string;
   reason?: string;
   alternatives?: Array<{
+    file_path?: string | null;
     material_id?: number | null;
     material_title?: string;
     match_score?: string;
@@ -47,6 +55,11 @@ export function MatchToolResult({
   errorText?: string;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [chaptersOverride, setChaptersOverride] = useState<MatchedChapter[] | null>(null);
+
+  useEffect(() => {
+    setChaptersOverride(output?.chapters ?? null);
+  }, [output?.chapters]);
 
   if (errorText) {
     return (
@@ -82,7 +95,7 @@ export function MatchToolResult({
   }
 
   if (state === "output-available" && output) {
-    const chapters = output.chapters ?? [];
+    const chapters = chaptersOverride ?? output.chapters ?? [];
     const matched = chapters.filter((c) => c.file_path || c.material_id).length;
     const empty = chapters.length > 0 && matched === 0;
 
@@ -120,7 +133,22 @@ export function MatchToolResult({
             )}
             <ol className="border-t border-[var(--color-border)] divide-y divide-[var(--color-border)]">
               {chapters.map((ch, i) => (
-                <ChapterMatchRow key={ch.chapter_id ?? i} chapter={ch} index={i} />
+                <ChapterMatchRow
+                  key={ch.chapter_id ?? i}
+                  chapter={ch}
+                  index={i}
+                  projectId={input?.projectId}
+                  onChapterChange={(updated) => {
+                    setChaptersOverride((prev) =>
+                      (prev ?? chapters).map((item, idx) =>
+                        (item.chapter_id && item.chapter_id === updated.chapter_id) ||
+                        (!item.chapter_id && idx === i)
+                          ? updated
+                          : item
+                      )
+                    );
+                  }}
+                />
               ))}
             </ol>
             {output.action_hint && (
@@ -140,13 +168,116 @@ export function MatchToolResult({
   return null;
 }
 
-function ChapterMatchRow({ chapter, index }: { chapter: MatchedChapter; index: number }) {
+function ChapterMatchRow({
+  chapter,
+  index,
+  projectId,
+  onChapterChange,
+}: {
+  chapter: MatchedChapter;
+  index: number;
+  projectId?: number;
+  onChapterChange: (chapter: MatchedChapter) => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadedTitle, setUploadedTitle] = useState<string | null>(null);
+  const [materialOpen, setMaterialOpen] = useState(false);
+  const [materialContent, setMaterialContent] = useState<string | null>(null);
+  const [materialLoading, setMaterialLoading] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [options, setOptions] = useState<MaterialOption[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [selectedPath, setSelectedPath] = useState(chapter.file_path || "");
+  const [savingMatch, setSavingMatch] = useState(false);
+  const [matchMessage, setMatchMessage] = useState<string | null>(null);
   const score = chapter.match_score || "";
   const meta = SCORE_META[score] || { icon: "❓", color: "var(--color-ink-mute)", label: "?" };
   const cat = chapter.category || "";
   const catLabel = CATEGORY_LABEL[cat] || cat;
   const title = chapter.material_title || "无匹配材料";
   const alts = chapter.alternatives || [];
+
+  useEffect(() => {
+    setSelectedPath(chapter.file_path || "");
+  }, [chapter.file_path]);
+
+  const handleViewMaterial = async () => {
+    if (!chapter.file_path) return;
+    setMaterialOpen((open) => !open);
+    if (materialContent !== null) return;
+    setMaterialLoading(true);
+    setUploadError(null);
+    try {
+      const data = await readMaterialFile(chapter.file_path);
+      setMaterialContent(data.content || "");
+    } catch (e: any) {
+      setUploadError(e.message || "材料读取失败");
+    } finally {
+      setMaterialLoading(false);
+    }
+  };
+
+  const handleOpenOptions = async () => {
+    const nextOpen = !optionsOpen;
+    setOptionsOpen(nextOpen);
+    if (!nextOpen || options.length > 0) return;
+    setOptionsLoading(true);
+    setUploadError(null);
+    try {
+      const data = await listMaterialOptions({ category: chapter.category || undefined });
+      setOptions(data);
+    } catch (e: any) {
+      setUploadError(e.message || "材料列表读取失败");
+    } finally {
+      setOptionsLoading(false);
+    }
+  };
+
+  const handleSaveMatch = async () => {
+    if (!projectId || !chapter.chapter_id) return;
+    const selected = options.find((item) => item.file_path === selectedPath);
+    setSavingMatch(true);
+    setMatchMessage(null);
+    setUploadError(null);
+    try {
+      const result = await updateMatchedChapter(projectId, {
+        chapter_id: chapter.chapter_id,
+        file_path: selectedPath || null,
+        material_title: selected?.title || (selectedPath ? undefined : "无匹配材料"),
+        match_score: selectedPath ? "高" : "低",
+        reason: selectedPath ? "用户手动选择" : "用户标记为需新建",
+      });
+      onChapterChange(result.chapter);
+      setMatchMessage("已保存");
+      setOptionsOpen(false);
+      setMaterialContent(null);
+      window.dispatchEvent(new CustomEvent("quickbid:match-updated"));
+    } catch (e: any) {
+      setUploadError(e.message || "保存失败");
+    } finally {
+      setSavingMatch(false);
+    }
+  };
+
+  const handleUpload = async (file: File) => {
+    if (!projectId) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const result = await uploadProjectMaterial(projectId, {
+        file,
+        category: chapter.category || "06_其他",
+        chapter: chapter.chapter,
+      });
+      setUploadedTitle(result.title);
+      window.dispatchEvent(new CustomEvent("quickbid:materials-updated"));
+    } catch (e: any) {
+      setUploadError(e.message || "上传失败");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <li className="px-4 py-3 hover:bg-[var(--color-paper-warm)] transition-colors">
@@ -185,6 +316,110 @@ function ChapterMatchRow({ chapter, index }: { chapter: MatchedChapter; index: n
                   · {a.material_title}
                 </span>
               ))}
+            </div>
+          )}
+          {projectId && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleViewMaterial}
+                disabled={!chapter.file_path}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)] disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                {materialLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Eye className="w-3 h-3" />}
+                查看材料
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenOptions}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--color-ink-soft)] hover:text-[var(--color-ink)] hover:bg-[var(--color-paper-warm)]"
+              >
+                改匹配
+              </button>
+              <label className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--color-ink-soft)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary-deep)] hover:bg-[var(--color-primary-bg)] cursor-pointer transition-colors">
+                {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                {uploading ? "上传中" : "添加材料"}
+                <input
+                  type="file"
+                  accept=".md,.txt,.docx,.pdf"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleUpload(file);
+                    e.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              {uploadedTitle && (
+                <span className="inline-flex items-center gap-1 text-[11.5px] text-[var(--color-success)]">
+                  <Plus className="w-3 h-3" />
+                  已归档：{uploadedTitle}
+                </span>
+              )}
+              {uploadError && (
+                <span className="text-[11.5px] text-[var(--color-danger)]">
+                  {uploadError}
+                </span>
+              )}
+              {matchMessage && (
+                <span className="text-[11.5px] text-[var(--color-success)]">
+                  {matchMessage}
+                </span>
+              )}
+            </div>
+          )}
+          {materialOpen && (
+            <div className="mt-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] p-3">
+              {materialLoading ? (
+                <div className="flex items-center gap-2 text-[11.5px] text-[var(--color-ink-mute)]">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  读取材料…
+                </div>
+              ) : (
+                <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-[11.5px] leading-5 text-[var(--color-ink-soft)] font-mono">
+                  {materialContent || "材料内容为空"}
+                </pre>
+              )}
+            </div>
+          )}
+          {optionsOpen && (
+            <div className="mt-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-sunk)] p-3 space-y-2">
+              {optionsLoading ? (
+                <div className="flex items-center gap-2 text-[11.5px] text-[var(--color-ink-mute)]">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  读取同分类材料…
+                </div>
+              ) : (
+                <>
+                  <select
+                    value={selectedPath}
+                    onChange={(e) => setSelectedPath(e.target.value)}
+                    className="w-full h-8 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] text-[var(--color-ink)]"
+                  >
+                    <option value="">无匹配材料 / 需新建</option>
+                    {options.map((item) => (
+                      <option key={item.file_path} value={item.file_path}>
+                        {item.title}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10.5px] text-[var(--color-ink-mute)]">
+                      {catLabel || "当前分类"} · {options.length} 个可选材料
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleSaveMatch}
+                      disabled={savingMatch || !chapter.chapter_id}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--color-ink-button)] px-2.5 py-1.5 text-[11.5px] font-semibold text-[var(--color-paper)] hover:bg-[var(--color-ink-button-soft)] disabled:opacity-50"
+                    >
+                      {savingMatch ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                      保存
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
